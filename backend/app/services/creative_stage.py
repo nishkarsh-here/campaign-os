@@ -11,7 +11,7 @@ parameter (M1_SECURITY_AUDIT A-5).
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from langgraph.types import Command
@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db.models import CampaignRow
 from app.domain.approval import Decision, Gate
+from app.domain.campaign import CampaignBrief
+from app.domain.common import Channel
 from app.domain.creative import (
     CreativeDirectionSet,
     CreativeRevisionDelta,
@@ -62,6 +64,10 @@ class CreativeTurn:
     diversity: DiversityVerdict | None
     approved: bool
     gaps: list[str]
+    #: The channels the Campaign Specification declares. The only channels a
+    #: per-channel copy override may name — offering one the campaign does not
+    #: run, and then refusing the save, would be a worse way to say the same.
+    channels: list[Channel] = field(default_factory=list)
 
 
 class CreativeStageService:
@@ -245,6 +251,7 @@ class CreativeStageService:
             diversity=state.direction_set.diversity if state.direction_set else None,
             approved=approved,
             gaps=state.creative_context.gaps if state.creative_context else [],
+            channels=await self._declared_channels(campaign.id),
         )
 
     # ------------------------------------------------------- human edits
@@ -275,8 +282,10 @@ class CreativeStageService:
         touched = [f for f in edits if f in editable]
         if not touched:
             raise ValidationFailed("Nothing to update.", details={"field": "body"})
-        for field in touched:
-            data[field] = edits[field]
+        if "channel_copy" in touched:
+            await self._assert_declared_channels(campaign.id, edits["channel_copy"])
+        for name in touched:
+            data[name] = edits[name]
         data["human_edited_fields"] = sorted(set(current.human_edited_fields) | set(touched))
         data["version"] = current.version + 1
 
@@ -295,6 +304,40 @@ class CreativeStageService:
                 await graph.aupdate_state(config, {"creative_specification": updated})
         return updated
 
+    async def _declared_channels(self, campaign_id: uuid.UUID) -> list[Channel]:
+        """The channels the Campaign Specification names, or none when it has
+        not been confirmed yet."""
+        from app.repositories.campaigns import CampaignSpecificationRepository
+
+        row = await CampaignSpecificationRepository(self.session, self.organization_id).latest(
+            campaign_id
+        )
+        if row is None:
+            return []
+        return list(CampaignBrief.model_validate(row.payload).channels)
+
+    async def _assert_declared_channels(self, campaign_id: uuid.UUID, overrides: Any) -> None:
+        """Per-channel copy only for channels this campaign actually runs.
+
+        The Campaign Specification owns the channel list; the Creative
+        Specification does not, and cannot check this for itself. Refused
+        rather than trimmed: an override silently dropped is words a user wrote
+        and believes are live.
+        """
+        channels = await self._declared_channels(campaign_id)
+        if not channels:
+            raise Conflict("Confirm the Campaign Specification before writing per-channel copy.")
+
+        declared = {c.value for c in channels}
+        asked = {str(key) for key in (overrides or {})}
+        undeclared = sorted(asked - declared)
+        if undeclared:
+            raise ValidationFailed(
+                f"This campaign does not run {', '.join(undeclared)}. "
+                f"Its channels are {', '.join(sorted(declared))}.",
+                details={"field": "channel_copy", "channels": sorted(declared)},
+            )
+
     async def current(self, campaign_id: uuid.UUID) -> CreativeTurn:
         """Read-only view of where the creative stage stands."""
         campaign = await self._campaign(campaign_id)
@@ -312,6 +355,7 @@ class CreativeStageService:
                 diversity=None,
                 approved=False,
                 gaps=[],
+                channels=await self._declared_channels(campaign.id),
             )
         return await self._project(campaign, snapshot)
 

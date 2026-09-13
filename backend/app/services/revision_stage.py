@@ -373,7 +373,7 @@ class RevisionStageService:
         """
         campaign = await self._campaign(campaign_id)
         row = await self._open(campaign.id, expected=RevisionStatus.PROPOSED)
-        validate_delta(delta)
+        validate_delta(delta, await self._campaign_specification(campaign.id))
         return await self.revisions.replace_delta(row, delta=delta.model_dump(mode="json"))
 
     async def approve_delta(self, campaign_id: uuid.UUID) -> SpecificationRevisionRow:

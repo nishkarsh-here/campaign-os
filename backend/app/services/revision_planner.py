@@ -37,6 +37,7 @@ from app.domain.revision import (
     FieldChange,
     RevisionAction,
     RevisionDelta,
+    locked_leaf,
 )
 from app.logging import get_logger
 from app.providers.base import LLMProvider, ProviderInvalidResponse
@@ -117,6 +118,29 @@ class ProposedRevision(DomainModel):
     remove: list[ProposedFieldChange] = Field(default_factory=list, max_length=10)
     explicit_unlocks: list[str] = Field(default_factory=list, max_length=10)
     rationale: str = Field(default="", max_length=600)
+
+
+#: Leaves a per-channel override may carry. Same three as `ChannelCopy`.
+_CHANNEL_COPY_LEAVES: tuple[str, ...] = ("headline", "subhead", "cta")
+
+
+def revisable_fields(campaign: CampaignBrief | None) -> frozenset[str]:
+    """What this campaign's revision may name.
+
+    The base list plus one dotted path per declared channel, so
+    `channel_copy.instagram_story.headline` is revisable for a campaign that
+    runs stories and refused for one that does not. Derived from the Campaign
+    Specification rather than from the channel enum: the enum says what the
+    product supports, the specification says what *this* campaign targets, and
+    only the second is a legitimate place to put copy.
+    """
+    if campaign is None:
+        return frozenset(REVISABLE_FIELDS)
+    return frozenset(REVISABLE_FIELDS) | {
+        f"channel_copy.{channel.value}.{leaf}"
+        for channel in campaign.channels
+        for leaf in _CHANNEL_COPY_LEAVES
+    }
 
 
 @dataclass(frozen=True)
@@ -205,6 +229,17 @@ def build_planner_prompt(context: RevisionContext) -> str:
     lines += [
         "",
         f"FIELDS YOU MAY CHANGE: {', '.join(REVISABLE_FIELDS)}",
+        *(
+            [
+                "PER-CHANNEL COPY: when the feedback is about one channel, name "
+                "channel_copy.<channel>.<headline|subhead|cta>. Channels for this "
+                f"campaign: {', '.join(c.value for c in context.campaign.channels)}. "
+                "Use this only when the feedback is clearly about one channel; a "
+                "change to the campaign's words belongs on the plain field."
+            ]
+            if context.campaign and context.campaign.channels
+            else []
+        ),
         f"FIELDS THAT ARE LOCKED: {', '.join(locked_now)}",
     ]
     if unlocked:
@@ -238,9 +273,10 @@ class RevisionPlanner:
         )
 
         unlocked = explicit_unlocks(context.feedback)
-        change = _clean(proposed.change, RevisionAction.CHANGE, unlocked)
-        add = _clean(proposed.add, RevisionAction.ADD, unlocked)
-        remove = _clean(proposed.remove, RevisionAction.REMOVE, unlocked)
+        allowed = revisable_fields(context.campaign)
+        change = _clean(proposed.change, RevisionAction.CHANGE, unlocked, allowed)
+        add = _clean(proposed.add, RevisionAction.ADD, unlocked, allowed)
+        remove = _clean(proposed.remove, RevisionAction.REMOVE, unlocked, allowed)
 
         if not (change or add or remove):
             raise FeedbackTooVague(
@@ -274,7 +310,10 @@ class RevisionPlanner:
 
 
 def _clean(
-    proposed: list[ProposedFieldChange], action: RevisionAction, unlocked: list[str]
+    proposed: list[ProposedFieldChange],
+    action: RevisionAction,
+    unlocked: list[str],
+    allowed: frozenset[str],
 ) -> list[FieldChange]:
     """Keep only the instructions this planner is allowed to act on.
 
@@ -287,9 +326,9 @@ def _clean(
     seen: set[str] = set()
     for item in proposed:
         name = item.field.strip()
-        if name not in REVISABLE_FIELDS or name in seen:
+        if name not in allowed or name in seen:
             continue
-        if name in LOCKED_FIELDS and name not in unlocked:
+        if locked_leaf(name) and name not in unlocked:
             log.info("revision_locked_field_dropped", field=name)
             continue
         if action in (RevisionAction.CHANGE, RevisionAction.ADD) and not item.new_value:
@@ -306,7 +345,7 @@ def _clean(
     return kept
 
 
-def validate_delta(delta: RevisionDelta) -> RevisionDelta:
+def validate_delta(delta: RevisionDelta, campaign: CampaignBrief | None = None) -> RevisionDelta:
     """Re-check a delta a human has edited.
 
     The UI lets a user change the plan before approving it, which means the
@@ -314,8 +353,9 @@ def validate_delta(delta: RevisionDelta) -> RevisionDelta:
     planner enforces has to hold for an edited delta too, or the edit becomes
     the way around the rules.
     """
+    allowed = revisable_fields(campaign)
     for item in (*delta.change, *delta.add, *delta.remove):
-        if item.field not in REVISABLE_FIELDS:
+        if item.field not in allowed:
             raise ProviderInvalidResponse(
                 f"{item.field} is not a field of the creative plan.", provider="revision"
             )

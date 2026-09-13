@@ -252,21 +252,27 @@ def _color_check(context: GuardianContext) -> GuardianCheckResult:
 
 
 def _specification_text(specification: CreativeSpecification) -> str:
-    """The prose a claim could hide in."""
-    return " ".join(
-        str(value)
-        for value in (
-            specification.concept,
-            specification.visual_story,
-            specification.headline,
-            specification.subhead or "",
-            specification.cta,
-            specification.body_copy or "",
-            specification.product_integration,
-            specification.brand_integration,
-            specification.visual_metaphor,
-        )
-    )
+    """The prose a claim could hide in.
+
+    **Per-channel overrides are included.** They are approved copy that will be
+    rendered onto a deliverable, so checking only the defaults would let a
+    prohibited claim reach a poster through the one channel nobody looked at —
+    which is exactly the failure claim safety exists to prevent.
+    """
+    parts = [
+        specification.concept,
+        specification.visual_story,
+        specification.headline,
+        specification.subhead or "",
+        specification.cta,
+        specification.body_copy or "",
+        specification.product_integration,
+        specification.brand_integration,
+        specification.visual_metaphor,
+    ]
+    for override in specification.channel_copy.values():
+        parts += [override.headline or "", override.subhead or "", override.cta or ""]
+    return " ".join(str(value) for value in parts)
 
 
 def _rgb(hex_colour: str) -> tuple[int, int, int] | None:

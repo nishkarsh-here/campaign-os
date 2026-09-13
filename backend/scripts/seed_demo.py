@@ -189,6 +189,22 @@ SPECIFICATION_EDITS: dict[str, object] = {
     "success_criteria": ["Specification pack requests from named practices."],
 }
 
+#: Per-channel copy for the demo campaign.
+#:
+#: The story gets a line that fits a tall frame read in a second; LinkedIn gets
+#: a line and a call to action written for someone evaluating a specification.
+#: The Instagram post has no override at all, so the demo shows both halves of
+#: the feature: a channel that differs, and a channel that inherits.
+CHANNEL_COPY_OVERRIDES: dict[str, dict[str, str]] = {
+    Channel.INSTAGRAM_STORY.value: {
+        "headline": "Outlasts the building",
+    },
+    Channel.LINKEDIN.value: {
+        "headline": "Specified for a 40-year facade life",
+        "cta": "Request the FS-9 specification pack",
+    },
+}
+
 #: The feedback that drives the seeded revision, so the demo has real history.
 REVISION_FEEDBACK = "Everything is good except the environment — make it feel more local to Mumbai."
 
@@ -594,6 +610,20 @@ async def _creative(
             campaign_id, decision=Decision.APPROVE, direction_id=chosen, feedback=None
         )
         await session.commit()
+
+    # Per-channel copy, written *before* Gate 2 so it is approved with the rest
+    # of the plan rather than smuggled in after it. A tall story frame read in
+    # a second cannot carry the same sentence as a wide LinkedIn banner read by
+    # someone evaluating a specification — which is the whole point of M11, and
+    # the demo should show it rather than describe it.
+    if turn.specification is not None and not turn.approved:
+        updated = await service.edit_specification(
+            campaign_id, {"channel_copy": CHANNEL_COPY_OVERRIDES}
+        )
+        await session.commit()
+        overridden = ", ".join(sorted(c.value for c in updated.channel_copy))
+        say("creative", f"per-channel copy written for {overridden}")
+        turn = await service.current(campaign_id)
 
     if turn.gate == "specification_gate":
         turn = await service.decide_specification(

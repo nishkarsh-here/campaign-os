@@ -141,7 +141,40 @@ A feature is done when **all** of these hold. Code existing is not one of them.
 
 ## 9. Current status
 
-**Milestone 10 complete — the architecture is frozen.** Production polish,
+**Milestone 11 complete** — per-channel creative copy. Rules it established:
+
+- **A campaign is one plan expressed differently per channel**, not one plan
+  resized. `CreativeSpecification.channel_copy` is an optional
+  `Channel -> {headline?, subhead?, cta?}` map; an absent override inherits, so
+  every specification written before M11 resolves byte-identically.
+- **One resolver, `copy_for(specification, channel)`.** The layout builder, the
+  channel adapter, the composition guard and the Brand Guardian all ask it.
+  Four independent `or` chains is how they come to disagree about what the
+  approved words are.
+- **An override is a sparse diff, not a second plan.** `ChannelCopy` uses
+  `None` for "inherit"; `ResolvedCopy` is the complete answer. Collapsing the
+  two types would make "not overridden" and "no headline" the same value.
+- **Overrides are approved copy or nothing.** They go through Gate 2 like every
+  other field, may only name channels the *Campaign Specification* declares
+  (checked at the service boundary, since the Creative Specification cannot
+  answer that for itself), and are refused in the composition editor.
+- **A per-channel call to action is locked like the default one.** `locked_leaf`
+  matches on the last path segment, so `channel_copy.linkedin.cta` cannot walk
+  past the lock that `cta` would hit.
+- **The Guardian scans overrides too.** They are approved copy that reaches a
+  deliverable; scanning only the defaults would let a prohibited claim ship
+  through the one channel nobody looked at.
+- **A revision changes one channel at a time**, addressed by a dotted field
+  name. The whole map cannot be revised as prose — a structured field is
+  changed by the service that owns it.
+- **A variant never invents an element.** A channel adapter moves what is
+  there; an override cannot bring back a subhead the frame dropped.
+
+**The freeze held.** One optional field on a frozen model, no migration, no
+graph change, no new artifact. `LayoutSpec` is still the composition source and
+the Campaign Specification is still the source of truth.
+
+Previously: **Milestone 10 complete — the architecture is frozen.** Production polish,
 reliability, deployment and demo hardening. Rules it established:
 
 - **Demo mode is a declaration, not a coincidence.** `DEMO_MODE=true` refuses to
@@ -404,8 +437,8 @@ email** (§A-1), and **Milestone 4 must resolve a campaign through the scoped
 repository before deriving a checkpoint `thread_id` from it** (§A-5), because
 the checkpointer has no concept of an organization.
 
-Next: nothing. The build is complete; see `M10_FINAL_REPORT.md` for status,
-limitations and the future roadmap.
+Next: nothing scheduled. See `M10_FINAL_REPORT.md` for status, limitations and
+the future roadmap.
 
 ### Environment note
 

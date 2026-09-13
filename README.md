@@ -74,6 +74,14 @@ areas. **The `LayoutSpec` is the source of truth and the PNG is its output**
 rather than silently dropping a change; channel variants are re-layouts, not
 regenerations; every edit is a new version and nothing is overwritten.
 
+**10 · Per-channel copy.** A campaign is one plan expressed differently per
+channel, not one plan resized. A channel may carry its own headline, subhead and
+call to action; an absent override inherits the campaign's. Overrides are
+approved at the same human gate as the rest of the plan, restricted to the
+channels the Campaign Specification declares, scanned by the Brand Guardian, and
+revisable one channel at a time — and the composition editor still refuses to
+rewrite them, now against that channel's own approved words.
+
 ## Why the architecture looks like this
 
 Eight rules, each of which cost something to hold:
@@ -99,11 +107,11 @@ ADR-013 and ADR-014).
 
 ## Status
 
-**Milestones 0–10 complete.** Nothing here claims to work that does not.
+**Milestones 0–11 complete.** Nothing here claims to work that does not.
 
 | | |
 |---|---|
-| Tests | 1,067 passing · ruff clean · mypy strict clean · tsc clean · Next build clean |
+| Tests | 1,107 passing · ruff clean · mypy strict clean · tsc clean · Next build clean |
 | Migrations | 001–009, `alembic check` clean |
 | API | 62 routes under `/v1` |
 | Frontend | 13 routes, all four async states on every screen |

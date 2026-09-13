@@ -80,6 +80,14 @@ listed with its channel, size, format, layout version, specification version
 and timestamp, because a new version must never replace a file someone already
 has.
 
+Per-channel copy lives on the Creative Specification screen, below the plan it
+diffs against, and only for channels the Campaign Specification declares —
+offering a channel the campaign does not run and then refusing the save would
+be a worse way to say the same thing. A blank field means "use the campaign's
+copy", so the placeholder shows what would be inherited. Overrides are approved
+at the same gate as the rest of the plan, and the composition editor still
+refuses to rewrite them: a change to approved words goes through a revision.
+
 The evaluation screen leads with the recommendation, because that is the
 question the user arrived with. Every score is shown beside the sentence that
 explains it and the weight that gave it influence, and the threshold rules that

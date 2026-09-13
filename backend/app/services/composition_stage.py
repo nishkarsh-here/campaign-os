@@ -31,7 +31,7 @@ from app.config import Settings
 from app.db.models import BrandAssetRow, CampaignRow, FinalAssetRow, GeneratedAssetRow
 from app.domain.brand import BrandProfile
 from app.domain.common import Channel
-from app.domain.creative import CreativeSpecification
+from app.domain.creative import CreativeSpecification, ResolvedCopy, copy_for
 from app.domain.creative_context import BrandGuardrails
 from app.domain.layout import (
     HEX,
@@ -225,7 +225,14 @@ class CompositionService:
         if await self.layouts.latest(campaign.id, channel) is not None:
             return await self.current(campaign_id, channel=channel)
 
-        variant = adapt_to_channel(LayoutSpec.model_validate(source_row.payload), channel)
+        # The specification goes in so the variant carries *this* channel's
+        # approved words. Without it a story would inherit the square's copy,
+        # which is the whole gap M11 closes.
+        variant = adapt_to_channel(
+            LayoutSpec.model_validate(source_row.payload),
+            channel,
+            specification=await self._approved_specification(campaign.id),
+        )
         await self.layouts.create(
             campaign_id=campaign.id,
             channel=channel,
@@ -259,7 +266,7 @@ class CompositionService:
 
         current = LayoutSpec.model_validate(row.payload)
         specification = await self._approved_specification(campaign.id)
-        revised = _apply_edits(current, edits, specification)
+        revised = _apply_edits(current, edits, specification, channel)
 
         report = validate_layout(revised)
         if not report.can_render():
@@ -512,7 +519,10 @@ def _editable_fields(element: LayoutElement) -> frozenset[str]:
 
 
 def _apply_edits(
-    layout: LayoutSpec, edits: dict[str, Any], specification: CreativeSpecification
+    layout: LayoutSpec,
+    edits: dict[str, Any],
+    specification: CreativeSpecification,
+    channel: Channel,
 ) -> LayoutSpec:
     """Apply a human's changes to a copy of the layout.
 
@@ -525,6 +535,9 @@ def _apply_edits(
     """
     revised = LayoutSpec.model_validate(layout.model_dump(mode="json"))
     by_id = {element.id: element for element in revised.elements}
+    # Resolved once, for this channel: a channel with its own approved call to
+    # action must be checked against *that* one, not against the default.
+    approved = copy_for(specification, channel)
 
     for element_id, changes in (edits.get("elements") or {}).items():
         element = by_id.get(element_id)
@@ -543,7 +556,7 @@ def _apply_edits(
 
         if "content" in changes:
             content = str(changes["content"])
-            _guard_content(element.role, content, specification)
+            _guard_content(element.role, content, approved)
             element.content = content
         if "visible" in changes:
             _guard_visibility(element, bool(changes["visible"]))
@@ -623,23 +636,28 @@ def _colour(value: str) -> str:
     return value
 
 
-def _guard_content(role: str | None, content: str, specification: CreativeSpecification) -> None:
+def _guard_content(role: str | None, content: str, approved: ResolvedCopy) -> None:
     """Approved words stay approved.
 
     The call to action and the legal line are campaign facts a human already
     signed off. The editor may move, resize, recolour or hide them; putting
     different words in them is a change to the approved plan, and that belongs
     to the revision loop, not to a layout tweak.
+
+    `approved` is the copy resolved **for this channel**, so a channel with its
+    own approved call to action is checked against that one. Comparing against
+    the specification default instead would reject the very words the plan says
+    this channel should carry.
     """
     if not content.strip():
         raise ValidationFailed("Text cannot be empty. Hide the element instead.")
     if role not in PROTECTED_ROLES:
         return
-    if role == "cta" and content.strip() != specification.cta.strip():
+    if role == "cta" and content.strip() != approved.cta.strip():
         raise ValidationFailed(
             "The call to action is an approved campaign fact. Change it through a "
             "revision rather than in the layout.",
-            details={"role": role, "approved": specification.cta},
+            details={"role": role, "approved": approved.cta},
         )
     if role == "legal":
         raise ValidationFailed(

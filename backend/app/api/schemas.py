@@ -26,6 +26,7 @@ from app.domain.brand import (
 from app.domain.campaign import CampaignBrief, CampaignInputs, InterviewQuestion
 from app.domain.common import Channel, DomainModel, JobStatus, Role, StyleFamily
 from app.domain.creative import (
+    ChannelCopy,
     CreativeDirectionSet,
     CreativeSpecification,
     DiversityVerdict,
@@ -422,7 +423,13 @@ class SpecificationDecisionRequest(DomainModel):
 
 class UpdateCreativeSpecificationRequest(DomainModel):
     """Human edits. Only what is sent changes, and each edited field is marked
-    so a regeneration cannot undo it."""
+    so a regeneration cannot undo it.
+
+    `channel_copy` is sent whole rather than per channel: it is a small map and
+    a partial patch of a nested map is ambiguous about deletion. Only channels
+    the Campaign Specification declares are accepted, and the edit is subject
+    to the same Gate 2 approval as every other field on this object.
+    """
 
     concept: str | None = Field(default=None, min_length=1, max_length=800)
     visual_story: str | None = Field(default=None, max_length=1200)
@@ -443,6 +450,7 @@ class UpdateCreativeSpecificationRequest(DomainModel):
     product_integration: str | None = Field(default=None, max_length=500)
     people_guidance: str | None = Field(default=None, max_length=400)
     brand_integration: str | None = Field(default=None, max_length=500)
+    channel_copy: dict[Channel, ChannelCopy] | None = Field(default=None, max_length=7)
 
 
 class GenerationJobView(DomainModel):
@@ -770,6 +778,9 @@ class CreativeStageView(DomainModel):
     diversity: DiversityVerdict | None = None
     approved: bool = False
     gaps: list[str] = Field(default_factory=list)
+    #: Channels the Campaign Specification declares — the only ones a
+    #: per-channel copy override may name.
+    channels: list[Channel] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------- composition

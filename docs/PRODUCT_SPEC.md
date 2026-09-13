@@ -156,8 +156,22 @@ Creative Director and the Prompt Compiler. Later this becomes preference learnin
 
 One approved creative, re-composed deterministically:
 Instagram post 1:1, story 9:16, LinkedIn 1.91:1, Facebook, web banner,
-print poster A3/A4. Strategy and brand elements are preserved; only the
-`LayoutSpec` geometry changes.
+print poster A3/A4. Strategy and brand elements are preserved; the `LayoutSpec`
+geometry changes, **and so may the copy**.
+
+A campaign is one plan expressed differently per channel, not one plan resized:
+a story is a tall frame read in a second, a LinkedIn banner is read by someone
+evaluating a specification, and the same sentence rarely serves both. So a
+channel may carry its own approved headline, subhead and call to action
+(`CreativeSpecification.channel_copy`). An absent override inherits the
+campaign's own copy, which keeps an override a **diff against the approved
+plan** rather than a second plan.
+
+Overrides are approved at the same human gate as the rest of the plan, may only
+name channels the Campaign Specification declares, are scanned by the Brand
+Guardian like any other approved copy, and are revisable one channel at a time.
+The composition editor still refuses to rewrite them — now against that
+channel's own approved words.
 
 ## 12. Target demo (the thing that must not break)
 

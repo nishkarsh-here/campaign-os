@@ -33,6 +33,16 @@ uv run pytest -m e2e          # the full campaign walk
 - **Evaluator / Guardian** — scoring maths, ranking order, tie-breaks, and that a
   prohibited-claim violation always yields `NEEDS_REVISION`.
 - **Revision delta** — KEEP fields are provably unchanged after applying a delta.
+- **Per-channel copy** — a specification with no overrides resolves to its
+  defaults and renders to **byte-identical PNG output**, asserted on the pixels
+  rather than on the layout object: the resolver sits upstream of wrapping and
+  the shrink loop, so only the bytes cover all of it. A payload with the
+  `channel_copy` key *deleted* still validates, which is the
+  backward-compatibility promise that made the migration unnecessary. An
+  override changes only its own channel; a partial override inherits the rest;
+  a per-channel call to action is locked exactly as the default one is
+  (`locked_leaf` matches the last path segment, so
+  `channel_copy.linkedin.cta` cannot walk past a lock that `cta` would hit).
 - **Layout renderer** — a `LayoutSpec` renders to expected dimensions with text
   inside safe areas; deterministic byte-identical output for identical input;
   text that cannot be made to fit raises rather than overflowing silently; a
@@ -59,6 +69,14 @@ transaction.
   layout v1 and still has its own file, and that only the requested element
   changed. Every editor refusal is asserted as a typed error *and* as a `400`
   with a readable message, including the deliberate invalid-layout case
+- per-channel copy across the seams a pure function cannot reach: an unapproved
+  draft override never renders (composition refuses while the latest version is
+  unapproved) and an approved one does; an override may only name a channel the
+  **Campaign Specification** declares, and the refusal names the ones that are
+  allowed; the composition editor checks a call to action against that
+  channel's *own* approved words, so the channel's CTA is accepted and the
+  campaign default is refused on that same channel; three channels render three
+  different headlines into three distinct files
 - provider failure injection: an image provider that always fails must produce
   `FAILED` jobs, a surviving run, and a visible reason
 

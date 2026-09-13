@@ -53,6 +53,18 @@ IMMUTABLE_FIELDS: tuple[str, ...] = (
 )
 
 
+def locked_leaf(name: str) -> bool:
+    """Whether a delta field names something locked.
+
+    A per-channel override is addressed by a dotted path — say
+    `channel_copy.linkedin.cta` — and its last segment carries exactly the same
+    weight as the default field of that name. A channel's call to action is an
+    approved fact in precisely the way the default one is, and matching only
+    the whole string would have let an override slip past the lock.
+    """
+    return name.split(".")[-1] in LOCKED_FIELDS
+
+
 class RevisionAction(StrEnum):
     """What a delta does to one field.
 
@@ -152,7 +164,7 @@ class RevisionDelta(DomainModel):
         silently trimmed, because a silently trimmed delta is a revision that
         did not do what its own summary said.
         """
-        reached = set(self.touched_fields()) & set(LOCKED_FIELDS)
+        reached = {name for name in self.touched_fields() if locked_leaf(name)}
         uninvited = sorted(reached - set(self.explicit_unlocks))
         if uninvited:
             raise ValueError(

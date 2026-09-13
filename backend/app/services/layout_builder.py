@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.domain.common import CHANNEL_DIMENSIONS, Channel
-from app.domain.creative import CreativeSpecification
+from app.domain.creative import CreativeSpecification, copy_for
 from app.domain.creative_context import BrandGuardrails
 from app.domain.layout import (
     Box,
@@ -89,7 +89,11 @@ def build_layout(
     """
     width, height = CHANNEL_DIMENSIONS[channel]
     safe = SAFE_AREAS.get(channel, SafeArea())
-    geometry = _geometry(channel, has_subhead=bool(specification.subhead))
+    # One resolver, never a fallback expression here: this channel's words may
+    # differ from the specification's defaults, and the guard that protects the
+    # call to action has to be looking at the same answer.
+    copy = copy_for(specification, channel)
+    geometry = _geometry(channel, has_subhead=bool(copy.subhead))
     headline_size = _HEADLINE_SIZE.get(channel, 0.075)
 
     spec = LayoutSpec(
@@ -124,10 +128,10 @@ def build_layout(
         )
     )
 
-    spec.elements.append(_headline_element(specification.headline, geometry, safe, headline_size))
-    if geometry.has_subhead and specification.subhead:
-        spec.elements.append(_subhead_element(specification.subhead, geometry, safe, headline_size))
-    spec.elements.append(_cta_element(specification.cta, geometry, safe, headline_size))
+    spec.elements.append(_headline_element(copy.headline, geometry, safe, headline_size))
+    if geometry.has_subhead and copy.subhead:
+        spec.elements.append(_subhead_element(copy.subhead, geometry, safe, headline_size))
+    spec.elements.append(_cta_element(copy.cta, geometry, safe, headline_size))
 
     # The logo only when the brand actually has one. No placeholder: a poster
     # with an invented mark looks finished and cannot be used.
@@ -140,16 +144,30 @@ def build_layout(
     return spec
 
 
-def adapt_to_channel(source: LayoutSpec, channel: Channel, *, version: int = 1) -> LayoutSpec:
+def adapt_to_channel(
+    source: LayoutSpec,
+    channel: Channel,
+    *,
+    version: int = 1,
+    specification: CreativeSpecification | None = None,
+) -> LayoutSpec:
     """The same composition, re-laid for a different frame.
 
-    A variant is a re-layout, never a regeneration: the plate, the copy and the
-    logo are identical, and only the geometry moves. That is why an Instagram
-    post and a story are recognisably the same creative — and why a second
-    aspect ratio costs nothing but a render.
+    A variant is a re-layout, never a regeneration: the plate and the logo are
+    identical and only the geometry moves. That is why an Instagram post and a
+    story are recognisably the same creative, and why a second aspect ratio
+    costs nothing but a render.
+
+    **The copy is the one thing that may differ.** Pass `specification` and the
+    target channel's approved words are used; omit it and the source's words
+    are carried across exactly as before. Optional rather than required so the
+    function stays a pure re-layout for callers that have no specification to
+    hand — and so a variant built before overrides existed still resolves
+    identically.
     """
     width, height = CHANNEL_DIMENSIONS[channel]
     safe = SAFE_AREAS.get(channel, SafeArea())
+    copy = copy_for(specification, channel) if specification is not None else None
 
     # A variant is its own document, so the id is dropped and a fresh one
     # minted. Everything else — the plate, the copy, the logo — is carried
@@ -165,11 +183,23 @@ def adapt_to_channel(source: LayoutSpec, channel: Channel, *, version: int = 1) 
         }
     )
 
-    geometry = _geometry(channel, has_subhead=any(e.role == "subhead" for e in adapted.elements))
+    # A re-layout moves what is there; it never adds an element. So a subhead
+    # is possible only if the source carries one — reserving space for copy
+    # with no element to fill it would leave a gap the renderer cannot see.
+    carries_subhead = any(e.role == "subhead" for e in adapted.elements)
+    has_subhead = carries_subhead and (bool(copy.subhead) if copy else True)
+    geometry = _geometry(channel, has_subhead=has_subhead)
     headline_size = _HEADLINE_SIZE.get(channel, 0.075)
     kept: list[LayoutElement] = []
 
     for element in adapted.elements:
+        # This channel's own words, where it has them. Done before the geometry
+        # below, because a shorter headline is exactly why someone overrode it.
+        if copy is not None and element.role in ("headline", "subhead", "cta"):
+            replacement_text = getattr(copy, element.role)
+            if replacement_text:
+                element.content = replacement_text
+
         if element.role == "subhead" and not geometry.has_subhead:
             # Dropped rather than shrunk: a banner has no room for a second
             # line of readable type.

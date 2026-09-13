@@ -16,7 +16,7 @@ import re
 
 from pydantic import Field, model_validator
 
-from app.domain.common import DomainModel, Id, StyleFamily, new_id
+from app.domain.common import Channel, DomainModel, Id, StyleFamily, new_id
 
 #: Words that carry no distinguishing signal when comparing two directions.
 _STOPWORDS = frozenset(
@@ -152,6 +152,66 @@ class CreativeDirection(DomainModel):
         return frozenset(tokens | {f"style:{s.value}" for s in self.style_families})
 
 
+class ChannelCopy(DomainModel):
+    """Words written for one channel, where the default does not fit it.
+
+    A story is a tall frame read in a second; a LinkedIn banner is a wide one
+    read by someone evaluating a specification. The same sentence rarely serves
+    both, and resizing it does not make it serve both.
+
+    Every field is optional and means "override this one". An absent field
+    falls back to the specification's default, so an override is always a
+    *diff* against the approved plan rather than a second plan — which is what
+    keeps one campaign one campaign.
+    """
+
+    headline: str | None = Field(default=None, min_length=1, max_length=200)
+    subhead: str | None = Field(default=None, min_length=1, max_length=300)
+    cta: str | None = Field(default=None, min_length=1, max_length=120)
+
+    def is_empty(self) -> bool:
+        return self.headline is None and self.subhead is None and self.cta is None
+
+
+class ResolvedCopy(DomainModel):
+    """The words one channel actually renders, after overrides are applied.
+
+    A separate type from `ChannelCopy` on purpose: that one is a sparse diff
+    where `None` means "inherit", this one is the complete answer where
+    `headline` and `cta` are always present. Collapsing them would make
+    "not overridden" and "no headline" the same value.
+    """
+
+    headline: str
+    subhead: str | None = None
+    cta: str
+
+
+def copy_for(specification: CreativeSpecification, channel: Channel) -> ResolvedCopy:
+    """The single place per-channel copy is resolved.
+
+    One function rather than a fallback expression at each call site: the
+    layout builder, the channel adapter, the composition guard and the Brand
+    Guardian all need the same answer, and four independent `or` chains is how
+    they come to disagree about what the approved words are.
+    """
+    override = specification.channel_copy.get(channel)
+    if override is None:
+        return ResolvedCopy(
+            headline=specification.headline,
+            subhead=specification.subhead,
+            cta=specification.cta,
+        )
+    return ResolvedCopy(
+        headline=override.headline or specification.headline,
+        # `or` rather than a None check: an override is a sparse diff, and
+        # there is no way to *remove* a subhead per channel — the layout drops
+        # it where there is no room, which is a geometry decision.
+        subhead=override.subhead or specification.subhead,
+        cta=override.cta or specification.cta,
+    )
+
+
 class CreativeSpecification(DomainModel):
     """The approved creative plan. Everything generation needs, nothing it doesn't."""
 
@@ -199,6 +259,16 @@ class CreativeSpecification(DomainModel):
     #: Fields a revision must not touch unless the user explicitly says so.
     #: The revision planner reads this to build its KEEP list (PRODUCT_SPEC §8).
     locked_fields: list[str] = Field(default_factory=list)
+
+    #: Per-channel copy, where a channel needs different words from the
+    #: default. Absent for every channel by default, so a specification written
+    #: before this existed resolves exactly as it always did.
+    #:
+    #: Keyed by `Channel` so an override cannot name a channel the product does
+    #: not have. Whether the *campaign* targets that channel is a question this
+    #: model cannot answer — the Campaign Specification owns the channel list —
+    #: so that check lives at the service boundary where both are in scope.
+    channel_copy: dict[Channel, ChannelCopy] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _core_present(self) -> CreativeSpecification:

@@ -401,6 +401,46 @@ create index on brand_chunks using hnsw (embedding vector_cosine_ops);
 > Applied as `migrations/versions/0009_final_composition.py`; verified to run
 > clean, to downgrade, and `alembic check` reports no drift.
 
+## No migration 010 — per-channel copy (Milestone 11)
+
+> **Deliberately no schema change.** Per-channel creative copy lives inside the
+> existing `creative_specifications.payload` JSONB, as one optional field on the
+> `CreativeSpecification` model:
+>
+> ```json
+> "channel_copy": {
+>   "instagram_story": { "headline": "Outlasts the building" },
+>   "linkedin": {
+>     "headline": "Specified for a 40-year facade life",
+>     "cta": "Request the FS-9 specification pack"
+>   }
+> }
+> ```
+>
+> Keyed by `Channel`; every leaf (`headline`, `subhead`, `cta`) is optional and
+> means "override this one". An absent leaf inherits the specification's own
+> value, so an override is a **sparse diff** against the approved plan rather
+> than a second plan. `app.domain.creative.copy_for(specification, channel)` is
+> the single resolver — the layout builder, the channel adapter, the composition
+> guard and the Brand Guardian all ask it rather than reimplementing the
+> fallback.
+>
+> **This is exactly why the payload is JSONB** (see "The JSONB decision"
+> above). The field is additive and optional, so every row written before M11
+> validates unchanged and no backfill exists. A specification whose payload has
+> no `channel_copy` key at all resolves to its defaults, which is asserted by a
+> test that deletes the key and re-validates.
+>
+> **No `schema_version` bump.** That counter exists for a payload shape a reader
+> could misinterpret. An absent optional field is not ambiguous — it means what
+> it has always meant — so bumping it would force a migration path for a change
+> that has none.
+>
+> Versioning is unchanged and does the work: an override is written as a new
+> `creative_specifications` row under the existing `(campaign_id, version)`
+> uniqueness, subject to the same Gate 2 approval, and the previous version
+> keeps saying exactly what it said.
+
 ## Migration 003 sketch — the fuller workflow (Milestones 3–5)
 
 ```sql

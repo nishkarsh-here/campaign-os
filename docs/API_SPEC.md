@@ -262,6 +262,30 @@ same version would race to become the next one.
 | `GET` | `/v1/campaigns/{id}/assets` | assets + evaluation + guardian verdict + rank |
 | `GET` | `/v1/campaigns/{id}/revisions` | KEEP/CHANGE deltas per iteration |
 
+### Per-channel creative copy
+
+`PATCH /v1/campaigns/{id}/creative/specification` accepts `channel_copy`, a map
+of `Channel -> {headline?, subhead?, cta?}`. Every leaf is optional and means
+"override this one"; an absent leaf inherits the specification's default, so an
+override is a **diff** against the approved plan rather than a second plan.
+
+* Only channels the **Campaign Specification** declares are accepted. Anything
+  else is a `400` naming the channels that are allowed.
+* Sent whole rather than per channel — it is a small map, and a partial patch of
+  a nested map is ambiguous about deletion.
+* Subject to the **same Gate 2 approval** as every other field. An unapproved
+  draft never reaches composition.
+* `GET /v1/campaigns/{id}/creative` returns `channels`, the declared list, so
+  the interface only offers what the campaign actually runs.
+
+A revision addresses one channel at a time by a dotted field name —
+`channel_copy.instagram_story.headline`. A per-channel call to action is locked
+exactly as the default one is and needs an explicit unlock. The map as a whole
+cannot be revised as prose.
+
+**The composition editor still refuses to rewrite a call to action**, now
+checked against the channel's *own* approved words rather than the default.
+
 ### Campaign overview
 
 | Method | Path | Notes |

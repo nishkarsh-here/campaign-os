@@ -13,7 +13,11 @@
 import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { AppShell } from '@/components/app-shell';
-import { DirectionBoard, SpecificationPanel } from '@/components/creative-director';
+import {
+  ChannelCopyPanel,
+  DirectionBoard,
+  SpecificationPanel,
+} from '@/components/creative-director';
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/states';
 import {
   ApiError,
@@ -287,6 +291,24 @@ export default function CreativePage({
                       api.decideCreativeSpecification(campaignId, organizationId, {
                         decision: 'REQUEST_REVISION',
                         feedback,
+                      }),
+                    )
+                  }
+                />
+              ) : null}
+
+              {/* Only channels the Campaign Specification declares, and only
+                  once there is a plan to attach them to. */}
+              {stage.specification ? (
+                <ChannelCopyPanel
+                  specification={stage.specification}
+                  channels={stage.channels}
+                  busy={busy}
+                  approved={stage.approved}
+                  onSave={(overrides) =>
+                    void run(() =>
+                      api.updateCreativeSpecification(campaignId, organizationId, {
+                        channel_copy: overrides,
                       }),
                     )
                   }

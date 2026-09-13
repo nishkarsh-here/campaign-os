@@ -558,6 +558,19 @@ export interface CreativeDirectionSet {
 }
 
 /** The approved plan. Everything generation needs, nothing it does not. */
+/**
+ * Words written for one channel, where the default does not fit it.
+ *
+ * A sparse diff: an absent field means "inherit the specification's default",
+ * not "this channel has no headline". The complete answer for a channel is
+ * what the backend's `copy_for` resolves.
+ */
+export interface ChannelCopy {
+  headline?: string | null;
+  subhead?: string | null;
+  cta?: string | null;
+}
+
 export interface CreativeSpecification {
   id: string;
   campaign_id: string;
@@ -591,6 +604,8 @@ export interface CreativeSpecification {
   negative_constraints: NegativeConstraints;
   /** Fields a human changed. A regeneration must not undo these. */
   human_edited_fields: string[];
+  /** Per-channel overrides. Empty for a specification that has none. */
+  channel_copy: Partial<Record<Channel, ChannelCopy>>;
   locked_fields: string[];
 }
 
@@ -606,6 +621,8 @@ export interface CreativeStageView {
   diversity: DiversityVerdict | null;
   approved: boolean;
   gaps: string[];
+  /** Channels the Campaign Specification declares — the only ones an override may name. */
+  channels: Channel[];
 }
 
 export type StrategyDecision = 'APPROVE' | 'REJECT' | 'REQUEST_REVISION';
@@ -1284,7 +1301,7 @@ export const api = {
   updateCreativeSpecification: (
     id: string,
     organizationId: string | null,
-    edits: Record<string, string>,
+    edits: Record<string, string> | { channel_copy: Partial<Record<Channel, ChannelCopy>> },
   ) =>
     apiFetch<CreativeSpecification>(`/campaigns/${id}/creative/specification`, {
       method: 'PATCH',

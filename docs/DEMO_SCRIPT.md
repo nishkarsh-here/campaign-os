@@ -29,8 +29,15 @@ cd frontend && npm run dev
 The seed prints the campaign URL. Open it and leave the tab ready.
 
 **Check before you present**: the header shows a **DEMO MODE** badge, the
-overview shows six stages all green, and the Channels card shows three
-thumbnails. If any of those is missing, re-run the seed with `--reset`.
+overview shows five green stages and **one amber "Needs you" on Brand check**,
+the Channels card shows three thumbnails, and the three final assets carry three
+different headlines. If any of those is missing, re-run the seed with `--reset`.
+
+**The amber stage is the point, not a fault.** The Brand Guardian rejected the
+creative the evaluator ranked first. That is the single best moment in this
+demo — quality and brand safety are different questions, and here they
+disagree. Do not re-seed hoping for a green one; the seed is deterministic and
+will produce the same rejection every time.
 
 The seed is idempotent — running it without `--reset` does nothing if the data
 is already there — and `--reset` deletes only what the seed created, so your own
@@ -57,9 +64,21 @@ Open `/app/campaigns/<id>/overview`.
 > on this screen is stored — every number is read from the service that owns it,
 > so the dashboard cannot disagree with the screen it summarises."
 
-Point at: **Creative Specification v2**, **Brand check: PASS**, **1 revision**,
-**3 channels**. The story is already on the screen before you have opened
-anything.
+Point at: **Creative Specification v3**, **1 revision**, **3 channels**, and the
+recommendation at **80/100**. The story is already on the screen before you have
+opened anything.
+
+Then point at the one stage that is not green — **Brand check · Needs you**,
+*"The selected creative was rejected — review the findings."*
+
+> "And this is the interesting one. The evaluator ranked this creative first,
+> at eighty out of a hundred. The Brand Guardian then rejected it. Those are
+> two different questions — *how good is it* and *is this acceptable for this
+> brand* — and the system is allowed to disagree with itself in public rather
+> than quietly averaging the two into one number."
+
+Leave it amber. You will come back to it at step 10, and the card at the top
+already tells you where to go next.
 
 ### 2 · The Brand Brain (2:00)
 
@@ -124,6 +143,20 @@ Show the derived style profile.
 Note that the call to action and key message are **pinned** from the Campaign
 Specification, overwritten after the model runs rather than requested from it.
 
+Scroll to **Per-channel copy**.
+
+> "A campaign is one plan expressed differently per channel — not one plan
+> resized. A story is a tall frame read in a second; a LinkedIn banner is read
+> by someone evaluating a specification. So the story has a shorter headline
+> and LinkedIn has its own line and its own call to action."
+
+Point at Instagram post, which has no override.
+
+> "And this one inherits. An override is a diff against the approved plan, not
+> a second plan — which is what keeps one campaign one campaign. Only channels
+> this campaign actually runs appear here, and these are approved at the same
+> gate as everything else. They are not editable in the composition editor."
+
 ### 7 · The compiled prompt (11:00)
 
 **Generate**, and expand the prompt.
@@ -158,6 +191,12 @@ Expand a score.
 > "And it is allowed to decline. If everything had been rejected it would say
 > so rather than putting the least bad one forward."
 
+Note the one at the top — **#1, 80.3, PASS** — and say that it is the one a
+person selected.
+
+> "Hold that thought. The evaluator likes this creative. Ask the Brand Guardian
+> the same question in a minute and you get a different answer."
+
 ### 10 · The Brand Guardian (15:00)
 
 **Refine**.
@@ -166,11 +205,29 @@ Expand a score.
 > for this brand?* Claim safety, brand restrictions and the palette are decided
 > in code against the Brand Brain — not asked of a model."
 
-Open a result's checks. Point at one that **FAILED** on tone.
+**This is the payoff.** Six creatives were checked; five passed. The one that
+did not is the one the evaluator ranked first and a person selected — verdict
+**REJECT**.
 
-> "The verdict is computed from these checks. A model never returns a verdict,
-> and a check that fails to run leaves the verdict null — an outage must never
-> read as brand approval."
+Open its checks. Seven of the eight pass. The one that fails is **brand_tone**:
+
+> *"Reads warmer and more consumer than the brand's stated tone."*
+> *Suggested fix: cool the palette and remove the lifestyle framing.*
+
+> "Nothing here is a model's opinion about the verdict. The model observed the
+> tone; the **code** turned eight checks into REJECT. A model never returns a
+> verdict, and a check that fails to *run* leaves the verdict null — an outage
+> must never read as brand approval."
+
+> "And notice what the product did with the disagreement. It did not average
+> them into one score, and it did not let the higher number win. It put the
+> campaign into *Needs you* and said which creative and which rule. A human
+> decides whether to revise it, select a different one, or ship it anyway — and
+> every one of those is a decision someone made on the record."
+
+If someone asks why the demo is not all green: this is why, and it is the
+honest state of this campaign. A product that only ever demonstrates its happy
+path has not shown you the part that matters.
 
 ### 11 · The revision (16:00)
 
@@ -179,9 +236,13 @@ Show the revision history entry.
 > "Someone said the environment should feel more local. That became this: an
 > explicit KEEP / CHANGE / ADD / REMOVE plan, shown before anything ran."
 
-> "Approving it produced Creative Specification v2. **v1 still exists, unchanged,
-> and the assets generated from it still point at it.** Applying a revision is a
-> pure function, asserted field by field."
+> "Approving it produced the next Creative Specification version. **The previous
+> one still exists, unchanged, and the assets generated from it still point at
+> it.** Applying a revision is a pure function, asserted field by field."
+
+The plan is at **v3** here, not v2: v1 came out of the Creative Director, v2 was
+the human edit that added per-channel copy, and v3 is this revision. Three
+versions, each a row, none of them overwritten.
 
 ### 12 · Final composition (18:00)
 
@@ -207,8 +268,14 @@ Change the headline size, press **Apply**, then **Re-render**.
 ### 13 · Channel variants and export (19:00)
 
 > "Three channels, from one composition. A variant is a re-layout — same plate,
-> same approved words, same logo, new geometry. No model is called and nothing
-> is regenerated."
+> same logo, new geometry. No model is called and nothing is regenerated."
+
+Put the three side by side.
+
+> "And the words differ. The post says *Built to outlast the building it clads*,
+> the story says *Outlasts the building*, LinkedIn says *Specified for a 40-year
+> facade life* and asks for the FS-9 pack by name. One campaign, three voices —
+> and the post is still inheriting the campaign's own line."
 
 Scroll to **Exports**.
 
@@ -229,6 +296,7 @@ Press **Download**.
 | A screen shows an unexpected failure | `MOCK_FAILURE_MODE` is not `none` | set it to `none` and restart |
 | Images do not load | `API_BASE_URL` is not reachable from the browser | it must be an origin the browser can reach, not an internal name |
 | Seed says data is already present | it is idempotent | `--reset` to rebuild |
+| Brand check shows amber "Needs you" | **expected** — the Guardian rejected the selected creative | nothing to fix; this is step 10 of the script |
 
 ## What not to promise
 
@@ -245,3 +313,7 @@ Say these before someone asks, rather than after:
   does not identify or substitute a named font.
 - **Background work does not survive a restart.** It is reconciled into a
   visible, retryable failure at startup rather than a spinner.
+- **The Guardian verdict in this demo is a mock provider's deterministic
+  judgement**, derived from the plate's own pixels. It is reproducible and it
+  exercises the real decision path — the verdict is still computed in code from
+  the checks — but it is not a real model assessing real artwork.

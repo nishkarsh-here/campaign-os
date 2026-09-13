@@ -659,6 +659,7 @@ def _creative_view(turn: CreativeTurn) -> CreativeStageView:
         diversity=turn.diversity,
         approved=turn.approved,
         gaps=turn.gaps,
+        channels=turn.channels,
     )
 
 

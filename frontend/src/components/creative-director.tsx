@@ -12,12 +12,16 @@
  */
 
 import { useMemo, useState } from 'react';
+import { CHANNEL_LABELS } from '@/lib/api';
 import type {
+  Channel,
+  ChannelCopy,
   CreativeDirection,
   CreativeDirectionSet,
   CreativeSpecification,
   DiversityVerdict,
 } from '@/lib/api';
+import { StatusBadge } from '@/components/states';
 
 function humanise(value: string | null | undefined): string {
   return value ? value.replace(/_/g, ' ') : '—';
@@ -735,6 +739,184 @@ export function SpecificationPanel({
           </button>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * Per-channel copy overrides.
+ *
+ * A campaign is one plan expressed differently per channel. This is where the
+ * differences are written: a shorter headline for a story, a more technical
+ * line for LinkedIn. An empty field means "use the campaign's default", so an
+ * override is always a diff against the approved plan rather than a second
+ * plan — which is what keeps one campaign one campaign.
+ *
+ * Only channels the **Campaign Specification** declares appear. The backend
+ * refuses an undeclared one; showing it here and then refusing the save would
+ * be a worse way to say the same thing.
+ *
+ * Overrides go through the same Gate 2 approval as every other field on this
+ * object — a saved override is a new unapproved version until a human approves
+ * it, exactly like editing the headline.
+ */
+export function ChannelCopyPanel({
+  specification,
+  channels,
+  busy,
+  approved,
+  onSave,
+}: {
+  specification: CreativeSpecification;
+  channels: Channel[];
+  busy: boolean;
+  approved: boolean;
+  onSave: (overrides: Partial<Record<Channel, ChannelCopy>>) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [drafts, setDrafts] = useState<Partial<Record<Channel, ChannelCopy>>>({});
+
+  if (channels.length === 0) return null;
+
+  const stored = specification.channel_copy ?? {};
+
+  function beginEditing() {
+    const seed: Partial<Record<Channel, ChannelCopy>> = {};
+    for (const channel of channels) {
+      const existing = stored[channel];
+      seed[channel] = {
+        headline: existing?.headline ?? '',
+        subhead: existing?.subhead ?? '',
+        cta: existing?.cta ?? '',
+      };
+    }
+    setDrafts(seed);
+    setEditing(true);
+  }
+
+  function save() {
+    // Blank means "inherit", so a blank field is omitted rather than sent as
+    // an empty string — and a channel with nothing in it is dropped entirely,
+    // so "no override" and "an override that overrides nothing" stay one state.
+    const next: Partial<Record<Channel, ChannelCopy>> = {};
+    for (const channel of channels) {
+      const draft = drafts[channel];
+      if (!draft) continue;
+      const entry: ChannelCopy = {};
+      if (draft.headline?.trim()) entry.headline = draft.headline.trim();
+      if (draft.subhead?.trim()) entry.subhead = draft.subhead.trim();
+      if (draft.cta?.trim()) entry.cta = draft.cta.trim();
+      if (Object.keys(entry).length) next[channel] = entry;
+    }
+    setEditing(false);
+    onSave(next);
+  }
+
+  const count = channels.filter((c) => stored[c]).length;
+
+  return (
+    <section className="mt-5 rounded-md border border-line/70 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted">Per-channel copy</p>
+          <p className="mt-1 text-xs text-muted">
+            Where a channel needs different words. Leave a field blank to use the campaign&rsquo;s
+            own copy. {count > 0 ? `${count} of ${channels.length} channels overridden.` : null}
+          </p>
+        </div>
+        {approved ? null : editing ? (
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={save}
+              className="rounded-md border border-line px-2.5 py-1 text-xs hover:bg-line/40 disabled:opacity-50"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="rounded-md border border-line px-2.5 py-1 text-xs hover:bg-line/40"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={beginEditing}
+            className="shrink-0 rounded-md border border-line px-2.5 py-1 text-xs hover:bg-line/40 disabled:opacity-50"
+          >
+            Edit overrides
+          </button>
+        )}
+      </div>
+
+      <ul className="mt-3 space-y-3">
+        {channels.map((channel) => {
+          const override = stored[channel];
+          const draft = drafts[channel];
+          return (
+            <li key={channel} className="rounded-md border border-line/70 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium">{CHANNEL_LABELS[channel]}</span>
+                {override ? <StatusBadge tone="positive">Overridden</StatusBadge> : null}
+              </div>
+
+              {editing ? (
+                <div className="mt-2 space-y-2">
+                  {(['headline', 'subhead', 'cta'] as const).map((leaf) => (
+                    <label key={leaf} className="block">
+                      <span className="text-[10px] uppercase tracking-wide text-muted">
+                        {leaf === 'cta' ? 'Call to action' : leaf}
+                      </span>
+                      <input
+                        value={draft?.[leaf] ?? ''}
+                        placeholder={
+                          leaf === 'headline'
+                            ? specification.headline
+                            : leaf === 'cta'
+                              ? specification.cta
+                              : (specification.subhead ?? '—')
+                        }
+                        onChange={(event) =>
+                          setDrafts((current) => ({
+                            ...current,
+                            [channel]: { ...current[channel], [leaf]: event.target.value },
+                          }))
+                        }
+                        className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1 text-xs"
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : override ? (
+                <dl className="mt-2 space-y-1 text-xs">
+                  {(['headline', 'subhead', 'cta'] as const).map((leaf) =>
+                    override[leaf] ? (
+                      <div key={leaf}>
+                        <dt className="inline text-muted">
+                          {leaf === 'cta' ? 'Call to action' : leaf}:{' '}
+                        </dt>
+                        <dd className="inline">{override[leaf]}</dd>
+                      </div>
+                    ) : null,
+                  )}
+                </dl>
+              ) : (
+                <p className="mt-1 text-xs text-muted">Uses the campaign&rsquo;s copy.</p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      <p className="mt-3 text-xs text-muted">
+        Overrides are approved at the same gate as the rest of the plan, and are not editable in
+        the composition editor — a change to approved words goes through a revision.
+      </p>
     </section>
   );
 }
