@@ -1,0 +1,39 @@
+# --- secrets -----------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- python ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# --- node / next -------------------------------------------------------
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# --- local storage (dev StorageProvider writes here) --------------------
+storage/
+backend/storage/
+
+# --- os / editor -------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# --- claude code -------------------------------------------------------
+.claude/settings.local.json

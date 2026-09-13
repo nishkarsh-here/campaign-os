@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Shell tokens. Light and dark are both defined here so no colour has its
+   only definition inside a media query. */
+:root {
+  --surface: 250 250 249;
+  --ink: 28 25 23;
+  --muted: 120 113 108;
+  --line: 231 229 228;
+  --accent: 37 40 46;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: 12 12 14;
+    --ink: 245 245 244;
+    --muted: 161 161 170;
+    --line: 39 39 42;
+    --accent: 228 87 46;
+  }
+}
+
+body {
+  background: rgb(var(--surface));
+  color: rgb(var(--ink));
+}

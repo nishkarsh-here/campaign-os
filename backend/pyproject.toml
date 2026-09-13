@@ -1,0 +1,118 @@
+[project]
+name = "campaign-os"
+version = "0.1.0"
+description = "AI marketing & branding orchestration platform"
+requires-python = ">=3.12,<3.14"
+
+dependencies = [
+    # --- api ---------------------------------------------------------
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    # --- typed domain ------------------------------------------------
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    # --- orchestration -----------------------------------------------
+    "langgraph>=1.2,<2",
+    "langgraph-checkpoint-postgres>=3.1,<4",
+    "psycopg[binary,pool]>=3.2",
+    # --- persistence -------------------------------------------------
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pgvector>=0.3.6",
+    # --- providers ---------------------------------------------------
+    "google-genai>=1.0",
+    "httpx>=0.27",
+    "tenacity>=9.0",
+    # --- media / documents -------------------------------------------
+    "pillow>=11.0",
+    "pymupdf>=1.24",
+    # --- observability -----------------------------------------------
+    "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.21",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: no I/O, no database, no network",
+    "integration: requires the test database; mock providers only",
+    "e2e: full campaign walk; mock providers only",
+]
+filterwarnings = ["error::DeprecationWarning:app.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]
+# FastAPI *requires* File()/Form()/Depends() as parameter defaults; B008 exists
+# for accidental shared mutables, which these are not.
+"app/api/routers/*" = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+disallow_untyped_defs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["fitz.*", "pgvector.*"]
+ignore_missing_imports = true
+
+# Provider implementations are wired in `app/providers/registry.py` but land per
+# milestone (mock + local: M1/M6, gemini: M6, leonardo: after M6, supabase: M10,
+# tavily: optional). Until a module exists mypy cannot resolve its lazy import.
+# DELETE THE MATCHING LINE as each provider is implemented — an override left
+# behind would hide real type errors in that adapter.
+[[tool.mypy.overrides]]
+module = [
+    "app.providers.mock.*",
+    "app.providers.gemini.*",
+    "app.providers.leonardo.*",
+    "app.providers.local.*",
+    "app.providers.supabase.*",
+    "app.providers.tavily.*",
+]
+ignore_missing_imports = true
+
+# Consequence of the block above: the lazily imported classes resolve to Any, so
+# the registry's factories look like they return Any. Remove this override once
+# every provider module exists — at that point the factories are fully checked.
+[[tool.mypy.overrides]]
+module = ["app.providers.registry"]
+warn_return_any = false
+
+# Same situation for the auth registry: the Supabase adapter arrives in
+# Milestone 10. DELETE both lines when app/auth/supabase.py exists.
+[[tool.mypy.overrides]]
+module = ["app.auth.supabase"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["app.auth.registry"]
+warn_return_any = false
