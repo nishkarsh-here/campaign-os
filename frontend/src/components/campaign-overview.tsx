@@ -1,140 +1,23 @@
 'use client';
 
 /**
- * The campaign command centre.
+ * Read-only panels for the campaign command centre.
  *
- * One screen that answers "where is this campaign, and what is waiting on me?"
- * without making anyone open six others.
+ * Strictly a read model. Nothing here mutates anything and nothing derives its
+ * own version of the truth — every number comes from the service that owns it,
+ * so these cannot quietly disagree with the screens they summarise.
  *
- * It is strictly a read model. Nothing here mutates anything, nothing derives
- * its own version of the truth, and every number comes from the service that
- * owns it — so this page cannot quietly disagree with the screen it summarises.
- * What it adds is *order*: the stages in the sequence the product runs them,
- * each with a state and a sentence, and one clear next action.
+ * UI-2B moved the parts of this file that had grown a second opinion: stage
+ * routing and state vocabulary now live once in `src/lib/nav.ts` and are drawn
+ * by the Meridian, and the next action is `command-center.tsx`'s
+ * `NextDecision`. What is left is the three panels that only report.
  */
 
 import Link from 'next/link';
-import {
-  CHANNEL_LABELS,
-  type CampaignOverview,
-  type GuardianVerdict,
-  type StageState,
-  type StageStateView,
-  mediaUrl,
-} from '@/lib/api';
-import { StatusBadge, type Tone } from '@/components/states';
-
-/** Where each stage lives, so "what's next" is one click rather than a hunt. */
-const STAGE_ROUTES: Record<string, string> = {
-  discovery: '',
-  creative: '/creative',
-  generation: '/generate',
-  evaluation: '/evaluate',
-  guardian: '/refine',
-  composition: '/compose',
-};
-
-const STATE_TONE: Record<StageState, Tone> = {
-  DONE: 'positive',
-  RUNNING: 'active',
-  ATTENTION: 'caution',
-  FAILED: 'negative',
-  PENDING: 'neutral',
-  BLOCKED: 'neutral',
-};
-
-const STATE_LABEL: Record<StageState, string> = {
-  DONE: 'Done',
-  RUNNING: 'Running',
-  ATTENTION: 'Needs you',
-  FAILED: 'Failed',
-  PENDING: 'Not started',
-  BLOCKED: 'Blocked',
-};
-
-const VERDICT_TONE: Record<GuardianVerdict, Tone> = {
-  PASS: 'positive',
-  NEEDS_REVISION: 'caution',
-  REJECT: 'negative',
-  UNKNOWN: 'neutral',
-};
-
-const VERDICT_LABEL: Record<GuardianVerdict, string> = {
-  PASS: 'Pass',
-  NEEDS_REVISION: 'Needs revision',
-  REJECT: 'Reject',
-  UNKNOWN: 'Not checked',
-};
-
-function href(campaignId: string, key: string): string {
-  return `/app/campaigns/${campaignId}${STAGE_ROUTES[key] ?? ''}`;
-}
-
-// ------------------------------------------------------------------ the spine
-export function StageSpine({
-  view,
-}: {
-  view: CampaignOverview;
-}) {
-  return (
-    <section className="rounded-lg border border-line">
-      <h2 className="border-b border-line px-5 py-3 text-sm font-medium">Progress</h2>
-      <ol className="divide-y divide-line">
-        {view.stages.map((stage: StageStateView) => (
-          <li key={stage.key}>
-            <Link
-              href={href(view.campaign_id, stage.key)}
-              className="flex items-start gap-4 px-5 py-3 hover:bg-line/20"
-            >
-              <StatusBadge tone={STATE_TONE[stage.state]}>{STATE_LABEL[stage.state]}</StatusBadge>
-              <span className="min-w-0">
-                <span className="block text-sm font-medium">{stage.label}</span>
-                <span className="mt-0.5 block text-xs text-muted">{stage.detail}</span>
-              </span>
-            </Link>
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
-// -------------------------------------------------------------- what's next
-export function NextAction({ view }: { view: CampaignOverview }) {
-  if (!view.next_stage) {
-    return (
-      <section className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-5">
-        <h2 className="text-sm font-medium">Nothing is waiting on you</h2>
-        <p className="mt-1 text-xs text-muted">
-          Every stage is complete and the final assets are exported.
-        </p>
-        <Link
-          href={`/app/campaigns/${view.campaign_id}/compose`}
-          className="mt-4 inline-block rounded-md border border-line bg-line/30 px-3 py-1.5 text-sm hover:bg-line/50"
-        >
-          Open the final assets →
-        </Link>
-      </section>
-    );
-  }
-
-  const stage = view.stages.find((s) => s.key === view.next_stage);
-  return (
-    <section className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-5">
-      <h2 className="text-sm font-medium">Next: {stage?.label ?? 'Continue'}</h2>
-      <p className="mt-1 text-xs text-muted">{view.next_action}</p>
-      <Link
-        href={href(view.campaign_id, view.next_stage)}
-        className="mt-4 inline-block rounded-md border border-line bg-line/30 px-3 py-1.5 text-sm hover:bg-line/50"
-      >
-        Go there →
-      </Link>
-    </section>
-  );
-}
+import { CHANNEL_LABELS, type CampaignOverview, mediaUrl } from '@/lib/api';
 
 // --------------------------------------------------------------- the numbers
-function Fact({
+function OverviewFact({
   label,
   value,
   hint,
@@ -152,51 +35,6 @@ function Fact({
   );
 }
 
-export function CampaignFacts({ view }: { view: CampaignOverview }) {
-  return (
-    <section className="rounded-lg border border-line p-5">
-      <h2 className="text-sm font-medium">State</h2>
-      <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4">
-        <Fact label="Brand" value={view.brand_name} />
-        <Fact
-          label="Campaign Specification"
-          value={
-            view.campaign_specification_version
-              ? `v${view.campaign_specification_version}`
-              : 'Not yet'
-          }
-        />
-        <Fact
-          label="Creative Specification"
-          value={
-            view.creative_specification_version
-              ? `v${view.creative_specification_version}`
-              : 'Not yet'
-          }
-          hint={view.creative_specification_approved ? 'Approved' : 'Awaiting approval'}
-        />
-        <Fact
-          label="Layout"
-          value={view.latest_layout_version ? `v${view.latest_layout_version}` : 'Not composed'}
-        />
-        <Fact
-          label="Latest generation"
-          value={`${view.latest_batch_assets} plate${view.latest_batch_assets === 1 ? '' : 's'}`}
-          hint={
-            view.failed_generations
-              ? `${view.failed_generations} job(s) failed`
-              : 'Newest batch only'
-          }
-        />
-        <Fact
-          label="Revisions"
-          value={view.revision_rounds}
-          hint={view.revision_rounds ? 'Earlier versions are kept' : 'None yet'}
-        />
-      </dl>
-    </section>
-  );
-}
 
 // ------------------------------------------------------------ recommendation
 export function RecommendationCard({ view }: { view: CampaignOverview }) {
@@ -242,34 +80,6 @@ export function RecommendationCard({ view }: { view: CampaignOverview }) {
           <p className="mt-0.5 text-sm text-muted">None chosen yet.</p>
         )}
       </div>
-    </section>
-  );
-}
-
-// ------------------------------------------------------------- brand status
-export function BrandStatusCard({ view }: { view: CampaignOverview }) {
-  const verdict = view.guardian_verdict;
-  return (
-    <section className="rounded-lg border border-line p-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-medium">Brand check</h2>
-        {verdict ? (
-          <StatusBadge tone={VERDICT_TONE[verdict]}>{VERDICT_LABEL[verdict]}</StatusBadge>
-        ) : (
-          <StatusBadge>Not run</StatusBadge>
-        )}
-      </div>
-      <p className="mt-2 text-xs text-muted">
-        {verdict
-          ? `${view.guardian_checked} creative${view.guardian_checked === 1 ? '' : 's'} checked against the Brand Brain.`
-          : 'The Brand Guardian has not run for this campaign.'}
-      </p>
-      <Link
-        href={`/app/campaigns/${view.campaign_id}/refine`}
-        className="mt-3 inline-block text-xs text-muted hover:underline"
-      >
-        Open the findings →
-      </Link>
     </section>
   );
 }

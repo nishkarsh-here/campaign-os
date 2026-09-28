@@ -12,20 +12,14 @@
 
 import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
-import {
-  ChannelCopyPanel,
-  DirectionBoard,
-  SpecificationPanel,
-} from '@/components/creative-director';
-import { EmptyState, ErrorState, SkeletonRows } from '@/components/states';
-import {
-  ApiError,
-  api,
-  type Campaign,
-  type CreativeStageView,
-} from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+import { ChannelCopyPanel, SpecificationPanel } from '@/components/creative-director';
+import { CreativeDirections } from '@/components/creative-directions';
+import { CreativePlan } from '@/components/creative-plan';
+import { Button, Card, EmptyState, ErrorState, SkeletonRows, buttonStyles } from '@/components/ui';
+import { ApiError, api, type Campaign, type CreativeStageView } from '@/lib/api';
+import { useCampaignWorkspace } from '@/lib/campaign-context';
+import { capabilitiesFor } from '@/lib/capabilities';
+import { creativeState } from '@/lib/creative';
 
 export default function CreativePage({
   params,
@@ -33,8 +27,10 @@ export default function CreativePage({
   params: Promise<{ campaignId: string }>;
 }) {
   const { campaignId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+  const { organizationId, me, overview, specification: campaignSpecification } =
+    useCampaignWorkspace();
+  const membership = me?.organizations.find((m) => m.organization.id === organizationId);
+  const capabilities = capabilitiesFor(membership?.role ?? (me ? 'viewer' : null));
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [stage, setStage] = useState<CreativeStageView | null>(null);
@@ -97,57 +93,19 @@ export default function CreativePage({
     }
   }
 
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
-    );
-  }
-
   const confirmed = campaign?.status === 'SPECIFICATION_CONFIRMED';
   const set = stage?.direction_set ?? null;
   const chosen =
     set?.directions.find((d) => d.id === (stage?.selected_direction_id ?? selectedId)) ?? null;
 
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <div className="flex flex-wrap gap-4">
-        <Link href={`/app/campaigns/${campaignId}`} className="text-sm text-muted hover:underline">
-          ← Discovery
-        </Link>
-        <Link
-          href={`/app/campaigns/${campaignId}/inspiration`}
-          className="text-sm text-muted hover:underline"
-        >
-          ← Inspiration
-        </Link>
-        {/* Only once the plan is approved: generation works from an approved
-            specification, so the link appears when the door actually opens. */}
-        {stage?.approved ? (
-          <Link
-            href={`/app/campaigns/${campaignId}/generate`}
-            className="ml-auto text-sm text-muted hover:underline"
-          >
-            Generate creatives →
-          </Link>
-        ) : null}
-      </div>
-
+    <>
       {error && !campaign ? (
         <div className="mt-4">
           <ErrorState
             title={error.code === 'NOT_FOUND' ? 'Campaign not found' : 'Could not load this page'}
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? () => void load() : undefined}
           />
@@ -159,89 +117,93 @@ export default function CreativePage({
       ) : (
         <div className="mt-4 space-y-6">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{campaign.title}</h1>
-            <p className="mt-1 text-sm text-muted">
-              {stage.approved
-                ? 'Specification approved. Ready for generation.'
-                : stage.gate === 'specification_gate'
-                  ? 'Review the execution plan, edit anything, then approve.'
-                  : set
-                    ? 'Choose a creative direction.'
-                    : 'Creative strategy.'}
+            <h2 className="text-h2">Creative</h2>
+            {/* The stage in the reader's words, derived from the gate and the
+                approval flag — never from the campaign row's status, which
+                only tracks discovery. */}
+            <p className="mt-1 max-w-content text-body text-muted">
+              {creativeState(stage).detail}
             </p>
           </div>
 
           {error ? <ErrorState message={error.message} requestId={error.requestId} /> : null}
 
           {stage.approved ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4">
+            <Card className="flex flex-wrap items-center justify-between gap-3 border-l-2 border-l-success">
               <div>
-                <p className="text-sm font-medium">Specification approved</p>
-                <p className="mt-0.5 text-xs text-muted">
-                  Ready to generate visual plates. Nothing has been generated yet.
+                <p className="text-label uppercase text-success">Creative plan approved</p>
+                <p className="mt-1 text-body text-muted">
+                  Every visual is generated from this plan, and checked against it.
                 </p>
               </div>
               <Link
                 href={`/app/campaigns/${campaignId}/generate`}
-                className="shrink-0 rounded-md border border-line bg-line/30 px-3 py-1.5 text-sm hover:bg-line/50"
+                className={buttonStyles('primary', 'md', 'shrink-0')}
               >
-                Generate creatives →
+                Generate the visuals
               </Link>
-            </div>
+            </Card>
           ) : null}
 
           {/* Missing context weakens the directions rather than blocking them,
               so it is stated, not enforced. */}
+          {/* Missing context weakens the routes rather than blocking them, so
+              it is stated, not enforced. */}
           {stage.gaps.length ? (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
-              <p className="text-xs font-medium">Working with incomplete context</p>
-              <ul className="mt-1 space-y-0.5 text-xs text-muted">
+            <Card className="border-l-2 border-l-warning">
+              <p className="text-label uppercase text-warning">Working with incomplete context</p>
+              <ul className="mt-2 space-y-1">
                 {stage.gaps.map((gap) => (
-                  <li key={gap}>· {gap}</li>
+                  <li key={gap} className="text-small text-muted">
+                    {gap}
+                  </li>
                 ))}
               </ul>
-            </div>
+            </Card>
           ) : null}
 
           {!confirmed && !set ? (
             <EmptyState
-              title="Confirm the campaign specification first"
-              description="Creative directions are built from confirmed campaign facts. Finish discovery and confirm the specification, then come back."
+              title="Confirm the brief first"
+              description="Creative routes are built from confirmed campaign facts. Finish the brief and confirm it, then come back."
               action={
-                <Link
-                  href={`/app/campaigns/${campaignId}`}
-                  className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40"
-                >
-                  Back to discovery
+                <Link href={`/app/campaigns/${campaignId}`} className={buttonStyles('primary', 'lg')}>
+                  Open the brief
                 </Link>
               }
             />
           ) : !set ? (
             <EmptyState
-              title="No directions yet"
-              description="We will propose three genuinely different routes from your brand, your specification and the references you liked."
+              title="No creative routes yet"
+              description="Campaign OS proposes three genuinely different routes from your brand, your brief and the references you liked."
               action={
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(() => api.startCreative(campaignId, organizationId))
-                  }
-                  className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40 disabled:opacity-50"
-                >
-                  {busy ? 'Thinking…' : 'Generate creative directions'}
-                </button>
+                capabilities.can('edit_campaign') ? (
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    disabled={busy}
+                    onClick={() => void run(() => api.startCreative(campaignId, organizationId))}
+                  >
+                    {busy ? 'Developing routes…' : 'Develop creative routes'}
+                  </Button>
+                ) : undefined
               }
             />
           ) : (
             <>
-              {stage.gate === 'strategy_gate' ? (
-                <DirectionBoard
-                  set={set}
-                  selectedId={selectedId}
+              {/* The routes stay visible after Gate 1 closes — the set holds
+                  all three, and a person should be able to read back which was
+                  chosen and what it was chosen over. Only the decision goes
+                  away with the gate. */}
+              {set ? (
+                <CreativeDirections
+                  view={stage}
+                  gateOpen={stage.gate === 'strategy_gate'}
+                  campaignSpecification={campaignSpecification}
+                  brandName={overview?.brand_name ?? null}
+                  capabilities={capabilities}
                   busy={busy}
-                  onSelect={setSelectedId}
-                  onApprove={(directionId) =>
+                  onChoose={(directionId) =>
                     void run(() =>
                       api.decideStrategy(campaignId, organizationId, {
                         decision: 'APPROVE',
@@ -257,28 +219,18 @@ export default function CreativePage({
                       }),
                     )
                   }
-                  onReject={(feedback) =>
-                    void run(() =>
-                      api.decideStrategy(campaignId, organizationId, {
-                        decision: 'REJECT',
-                        feedback,
-                      }),
-                    )
-                  }
                 />
               ) : null}
 
+              {/* Gate 2. The plan, read the way a marketer reads a brief. */}
               {stage.specification ? (
-                <SpecificationPanel
+                <CreativePlan
                   specification={stage.specification}
-                  direction={chosen}
-                  busy={busy}
+                  declaredChannels={stage.channels}
                   approved={stage.approved}
-                  onSave={(edits) =>
-                    void run(() =>
-                      api.updateCreativeSpecification(campaignId, organizationId, edits),
-                    )
-                  }
+                  gateOpen={stage.gate === 'specification_gate'}
+                  capabilities={capabilities}
+                  busy={busy}
                   onApprove={() =>
                     void run(() =>
                       api.decideCreativeSpecification(campaignId, organizationId, {
@@ -297,27 +249,67 @@ export default function CreativePage({
                 />
               ) : null}
 
-              {/* Only channels the Campaign Specification declares, and only
-                  once there is a plan to attach them to. */}
-              {stage.specification ? (
-                <ChannelCopyPanel
-                  specification={stage.specification}
-                  channels={stage.channels}
-                  busy={busy}
-                  approved={stage.approved}
-                  onSave={(overrides) =>
-                    void run(() =>
-                      api.updateCreativeSpecification(campaignId, organizationId, {
-                        channel_copy: overrides,
-                      }),
-                    )
-                  }
-                />
+              {/*
+                The field-level editor, kept behind a disclosure.
+
+                `CreativePlan` above is how the plan is read; this is how it is
+                changed, and it is the existing constrained editor — the one
+                that refuses an edit rather than trimming it. Folding it away
+                rather than deleting it keeps a working capability that the new
+                presentation does not replace.
+              */}
+              {stage.specification && !stage.approved && capabilities.can('edit_campaign') ? (
+                <details className="rounded-lg border border-line">
+                  <summary className="cursor-pointer px-5 py-4 text-label uppercase text-muted transition-colors duration-fast hover:text-ink">
+                    Edit the plan field by field
+                  </summary>
+                  <div className="space-y-6 border-t border-line p-5">
+                    <SpecificationPanel
+                      specification={stage.specification}
+                      direction={chosen}
+                      busy={busy}
+                      approved={stage.approved}
+                      onSave={(edits) =>
+                        void run(() =>
+                          api.updateCreativeSpecification(campaignId, organizationId, edits),
+                        )
+                      }
+                      onApprove={() =>
+                        void run(() =>
+                          api.decideCreativeSpecification(campaignId, organizationId, {
+                            decision: 'APPROVE',
+                          }),
+                        )
+                      }
+                      onRequestChanges={(feedback) =>
+                        void run(() =>
+                          api.decideCreativeSpecification(campaignId, organizationId, {
+                            decision: 'REQUEST_REVISION',
+                            feedback,
+                          }),
+                        )
+                      }
+                    />
+                    <ChannelCopyPanel
+                      specification={stage.specification}
+                      channels={stage.channels}
+                      busy={busy}
+                      approved={stage.approved}
+                      onSave={(overrides) =>
+                        void run(() =>
+                          api.updateCreativeSpecification(campaignId, organizationId, {
+                            channel_copy: overrides,
+                          }),
+                        )
+                      }
+                    />
+                  </div>
+                </details>
               ) : null}
             </>
           )}
         </div>
       )}
-    </AppShell>
+    </>
   );
 }

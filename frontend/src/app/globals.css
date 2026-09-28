@@ -2,27 +2,502 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Shell tokens. Light and dark are both defined here so no colour has its
-   only definition inside a media query. */
+/* ==========================================================================
+   Design tokens.
+
+   Every colour, radius, shadow and layout dimension the product uses is named
+   here once. Light and dark are both defined in this file so no value has its
+   only definition inside a media query — a token that exists in one theme only
+   is a token that renders as `transparent` in the other.
+
+   The four shell tokens from Milestone 1 (`surface`, `ink`, `muted`, `line`)
+   keep their existing meanings, because ~10,000 lines of application code
+   already depend on them and a foundation phase that repaints every screen is
+   not a foundation phase. What is new is everything those four could not say:
+   surfaces above the page, a usable accent, and status colour that is legible
+   on both backgrounds.
+   ========================================================================== */
+
 :root {
-  --surface: 250 250 249;
-  --ink: 28 25 23;
-  --muted: 120 113 108;
-  --line: 231 229 228;
-  --accent: 37 40 46;
+  /* Tells the browser to style native controls — <select>, <input type=color>,
+     scrollbars — for the active theme. Without it a dark page renders a
+     stark-white select. */
+  color-scheme: light;
+
+  /* --- colour: surfaces ------------------------------------------------- */
+  --surface: 250 250 249; /* the page itself */
+  --card: 255 255 255; /* a panel sitting on the page */
+  --raised: 255 255 255; /* a panel above a panel; leans on elevation too */
+
+  /* --- colour: text ----------------------------------------------------- */
+  --ink: 28 25 23; /* primary text */
+  /* Secondary text and metadata. Measured, not picked: at the previous
+     `120 113 108` this cleared 4.5:1 on the page itself but landed at 4.30-4.35
+     on the tinted panels status blocks use — so the metadata under a warning
+     banner, and the word inside a neutral badge, both failed. Darkened until
+     the worst case in the product measures 4.87:1. */
+  --muted: 112 105 100;
+
+  /* --- colour: structure ------------------------------------------------ */
+  --line: 231 229 228; /* borders and dividers */
+
+  /* --- colour: accent --------------------------------------------------- */
+  /* One accent, the same hue in both themes, each shade chosen to clear 4.5:1
+     against its own background. Previously light mode's "accent" was
+     near-black and dark mode's was orange, which meant the token named the
+     theme rather than the brand. */
+  --accent: 197 72 36;
+
+  /* --- colour: status --------------------------------------------------- */
+  /* Legibility, not decoration. These are the -700 shades because the -400
+     shades the screens used before resolve to roughly 1.8:1 on a near-white
+     page — a status word nobody can read. Status is never carried by colour
+     alone; see `StatusBadge`. */
+  /* A status badge is its own worst backdrop: `StatusBadge` puts the word at
+     the full token on a 10% wash of the *same* token, so the two move together
+     and the ratio is much tighter than the same word on the page. Measured
+     there, over card, surface and a `line/30` panel, rather than assumed:
+     warning sat at 4.38 and success at 4.47 — both readable-looking and both
+     failures. Darkened along their own hue until the worst backdrop measures
+     4.6. Danger and info already cleared it and are untouched. */
+  --success: 4 115 84;
+  --warning: 163 75 8;
+  --danger: 185 28 28;
+  --info: 3 105 161;
+
+  /* --- focus ------------------------------------------------------------ */
+  --focus: 197 72 36;
+
+  /* --- motion ----------------------------------------------------------- */
+  /* Four durations, from the table in docs/UI_UX_VISION.md §7. Named by intent
+     rather than by number, so "how fast is a navigation" has one answer.
+     `prefers-reduced-motion` collapses all of them; see the rule at the end of
+     this file. */
+  --motion-instant: 120ms;
+  --motion-fast: 160ms;
+  --motion-base: 240ms;
+  --motion-slow: 320ms;
+  /* Decelerating: things arrive and settle rather than launch. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* --- elevation -------------------------------------------------------- */
+  /* A colour rather than a whole shadow, so the three elevation steps stay
+     defined in one place (tailwind.config.ts) and only their ink changes. */
+  --shadow-color: 28 25 23;
+  --shadow-strength: 0.06;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
+
     --surface: 12 12 14;
+    --card: 24 24 27;
+    --raised: 32 32 36;
+
     --ink: 245 245 244;
     --muted: 161 161 170;
+
     --line: 39 39 42;
-    --accent: 228 87 46;
+
+    /* Lighter than the light theme's ember, because it has to clear 4.5:1 on
+       the raised surface as well as on the page. At `228 87 46` the accent
+       label on an elevated card measured 4.41 — close enough to look fine and
+       still a failure. */
+    --accent: 242 130 95;
+
+    --success: 52 211 153;
+    --warning: 251 191 36;
+    --danger: 248 113 113;
+    --info: 56 189 248;
+
+    --focus: 251 146 60;
+
+    /* Dark surfaces absorb a black shadow entirely, so elevation there is
+       carried mostly by --card/--raised stepping lighter. */
+    --shadow-color: 0 0 0;
+    --shadow-strength: 0.4;
   }
 }
 
 body {
   background: rgb(var(--surface));
   color: rgb(var(--ink));
+  /* `--font-sans` is set by next/font in the root layout and falls back to the
+     platform stack, so a missing font file degrades rather than breaks. */
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+}
+
+/* ==========================================================================
+   Focus.
+
+   There was no focus styling anywhere in the application before this: every
+   custom-styled button and link fell back to whatever ring the browser
+   happened to draw, which on a bordered button is often nothing visible at
+   all. One rule here covers every interactive element at once, including the
+   ones later phases add.
+
+   `:focus-visible` rather than `:focus`, so a mouse click does not leave a ring
+   behind — the ring is for people navigating by keyboard.
+   ========================================================================== */
+:focus-visible {
+  outline: 2px solid rgb(var(--focus));
+  outline-offset: 2px;
+}
+
+/* The skip link in the app shell: off-screen until focused, then anchored
+   where a sighted keyboard user will actually notice it. */
+.skip-link:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Respect a reduced-motion preference. The only motion in the product is the
+   skeleton pulse, and a pulsing page is a genuine problem for some readers. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+
+/* ==========================================================================
+   Motion.
+
+   Two keyframes carry almost everything the product needs: content arriving,
+   and the Meridian's line drawing forward as a campaign advances. Both are
+   suppressed by the `prefers-reduced-motion` rule above, which is why they can
+   be used freely.
+   ========================================================================== */
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The journey line filling in. Animates a scale rather than height so it
+   composites on the GPU and cannot reflow the rail beside it. */
+@keyframes draw-down {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/*
+ * `.arrive` is applied by the `Reveal` primitive. `backwards` fill matters:
+ * with a stagger delay the element must be invisible *before* its animation
+ * starts, or every item flashes at full opacity and then animates.
+ */
+.arrive {
+  animation: arrive var(--motion-base) var(--ease-out) backwards;
+}
+
+/*
+ * Under reduced motion the global rule collapses the duration to 0.01ms, which
+ * would leave `backwards` fill holding the from-state — an invisible element.
+ * This restores the end state explicitly.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .arrive {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ==========================================================================
+   ATLAS — the home hero's cartographic plane.
+
+   Kept in CSS rather than in a motion library or a WebGL scene: the whole
+   illusion is one perspective transform, two repeating gradients and a mask.
+   See `src/components/atlas-hero.tsx` for why that trade was made.
+
+   `--px` / `--py` are written directly by a pointer handler, which is why the
+   parallax costs no re-renders. They default to 0 so the plane is correct
+   before any pointer has moved and on every touch device.
+   ========================================================================== */
+
+.atlas-stage {
+  --px: 0;
+  --py: 0;
+  /* The depth the plane is laid back into. */
+  perspective: 1100px;
+}
+
+.atlas-plane {
+  position: absolute;
+  /* Overhangs the box so the receding edge leaves the frame rather than
+     stopping in mid-air. */
+  inset: -20% -30% -10% -30%;
+  /* The graticule: two hairline grids, drawn rather than imaged. */
+  /* Drawn from `--muted` rather than `--line`: at the border token's own
+     lightness the graticule measured all but invisible on the light theme,
+     which is a decorative element that may as well not ship. */
+  background-image:
+    repeating-linear-gradient(to right, rgb(var(--muted) / 0.22) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(to bottom, rgb(var(--muted) / 0.22) 0 1px, transparent 1px 64px);
+  transform: rotateX(62deg) translateY(6%) translateX(calc(var(--px) * -18px))
+    rotateZ(calc(var(--px) * 1.2deg));
+  transform-origin: 50% 100%;
+  /* Fades the grid out at every edge, so it reads as ground continuing past
+     the frame instead of as a rectangle sitting on the page. */
+  -webkit-mask-image: radial-gradient(ellipse 70% 62% at 50% 46%, #000 30%, transparent 78%);
+  mask-image: radial-gradient(ellipse 70% 62% at 50% 46%, #000 30%, transparent 78%);
+  transition: transform var(--motion-slow) var(--ease-out);
+}
+
+/* The thread from the brand down to a market: one source, many expressions. */
+.atlas-thread {
+  stroke: rgb(var(--accent) / 0.5);
+  stroke-width: 0.25;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 2 2;
+  animation: thread-in var(--motion-slow) var(--ease-out) backwards;
+}
+
+@keyframes thread-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.atlas-origin,
+.atlas-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  /* Centres the marker on its coordinate, and applies the parallax in the
+     opposite direction to the plane so the nodes feel like they sit above it. */
+  transform: translate(-50%, -50%) translate(calc(var(--px) * 10px), calc(var(--py) * 6px));
+  transition: transform var(--motion-slow) var(--ease-out);
+}
+
+.atlas-origin-dot {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 9999px;
+  background: rgb(var(--ink));
+  box-shadow: 0 0 0 4px rgb(var(--surface)), 0 0 0 5px rgb(var(--ink) / 0.25);
+}
+
+.atlas-origin-label,
+.atlas-node-label {
+  white-space: nowrap;
+  text-align: center;
+}
+
+.atlas-origin-label {
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--muted));
+}
+
+.atlas-node-dot {
+  position: relative;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: rgb(var(--accent));
+  box-shadow: 0 0 0 4px rgb(var(--surface)), 0 0 0 5px rgb(var(--accent) / 0.3);
+}
+
+/*
+ * The one ambient animation in the product.
+ *
+ * A slow, low-amplitude ring on the market markers — the "living map" the
+ * hero needs to not read as a diagram. Deliberately gated on
+ * `no-preference` rather than relying on the global reduced-motion rule,
+ * because an infinite animation is exactly what that preference is about, and
+ * it should not merely be shortened to 0.01ms — it should not exist.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .atlas-node-dot::after {
+    content: '';
+    position: absolute;
+    inset: -0.25rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(var(--accent) / 0.55);
+    animation: node-pulse 4s var(--ease-out) infinite;
+  }
+
+  /* Staggered, so three markers do not beat in unison like a warning light. */
+  .atlas-node:nth-child(odd) .atlas-node-dot::after {
+    animation-delay: 1.3s;
+  }
+}
+
+@keyframes node-pulse {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+}
+
+/* ==========================================================================
+   Creative direction cards.
+
+   The three concepts are the most important thing the product shows before a
+   visual exists, so they get depth the rest of the interface does not: a lift
+   on hover and focus, and a palette band derived from the direction's own
+   stated colours.
+
+   The band is a *visualisation of real data* — `CreativeDirection.palette` —
+   not artwork and not a preview of the campaign. It is labelled as such on
+   screen. Rendering an invented image here would be the single most misleading
+   thing this screen could do.
+   ========================================================================== */
+
+.direction-card {
+  transition:
+    transform var(--motion-base) var(--ease-out),
+    box-shadow var(--motion-base) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+
+/* `:focus-within` as well as `:hover`: the lift must not be mouse-only, or a
+   keyboard user loses the only cue that a card is active. */
+.direction-card:hover,
+.direction-card:focus-within {
+  transform: translateY(-3px);
+  box-shadow: var(--tw-shadow-modal, 0 10px 30px -10px rgb(var(--shadow-color) / 0.25));
+  border-color: rgb(var(--muted) / 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .direction-card:hover,
+  .direction-card:focus-within {
+    transform: none;
+  }
+}
+
+/* The selected direction sits forward of the others. */
+.direction-card[data-selected='true'] {
+  border-color: rgb(var(--accent) / 0.6);
+}
+
+/* Colour bands from the direction's own palette. `--n` stops share the width
+   evenly; with no palette the element is not rendered at all. */
+.palette-band {
+  display: flex;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 0.25rem;
+}
+
+.palette-band > span {
+  flex: 1 1 0;
+}
+
+/* ==========================================================================
+   Generated plates.
+
+   The image is the artifact the whole product exists to produce, so it gets a
+   reveal on load and depth on interaction — and nothing is drawn over it.
+   ========================================================================== */
+
+.plate-image {
+  animation: plate-in var(--motion-base) var(--ease-out) backwards;
+  transition: transform var(--motion-slow) var(--ease-out);
+}
+
+@keyframes plate-in {
+  from {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A slow push-in on hover, contained by the frame's `overflow-hidden`. */
+figure:hover > div > .plate-image,
+a:focus-visible .plate-image {
+  transform: scale(1.03);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plate-image {
+    animation: none;
+    opacity: 1;
+  }
+  figure:hover > div > .plate-image,
+  a:focus-visible .plate-image {
+    transform: none;
+  }
+}
+
+/* ==========================================================================
+   The version rail — UI-2C-E.
+
+   A drawn line behind the version timeline, in the Meridian's vocabulary: one
+   stroke, markers on it, the current one filled. It is deliberately not a
+   navigation — selecting a version changes what the panel compares, not where
+   you are — so it gets the Meridian's *look* and none of its affordances.
+
+   The line draws itself once on arrival, which is the only motion here that
+   carries meaning: it says "this is a sequence, and it runs this way".
+   ========================================================================== */
+
+.version-rail::before {
+  content: '';
+  position: absolute;
+  left: 0.3125rem; /* centres the 2px stroke under the 12px markers */
+  top: 0.5rem;
+  bottom: 0.5rem;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--accent) / 0.45),
+    rgb(var(--line)) 35%,
+    rgb(var(--line))
+  );
+  transform-origin: top;
+  animation: rail-draw var(--motion-slow) var(--ease-out) backwards;
+}
+
+@keyframes rail-draw {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .version-rail::before {
+    animation: none;
+    transform: none;
+  }
 }

@@ -11,17 +11,12 @@
  */
 
 import { use, useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
-import {
-  CanonicalPromptPanel,
-  JobBoard,
-  PlateGallery,
-  ProviderPrompts,
-} from '@/components/generation';
-import { EmptyState, ErrorState, SkeletonRows } from '@/components/states';
+import { CanonicalPromptPanel, ProviderPrompts } from '@/components/generation';
+import { GenerationStudio } from '@/components/generation-studio';
+import { Button, ErrorState, SkeletonRows } from '@/components/ui';
 import { ApiError, api, type Campaign, type GenerationView } from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+import { useCampaignWorkspace } from '@/lib/campaign-context';
+import { capabilitiesFor } from '@/lib/capabilities';
 
 /** Matches the documented polling contract: 1.5s, backing off to 5s after 60s. */
 const POLL_MS = 1500;
@@ -34,12 +29,12 @@ export default function GeneratePage({
   params: Promise<{ campaignId: string }>;
 }) {
   const { campaignId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+  const { organizationId, me } = useCampaignWorkspace();
+  const membership = me?.organizations.find((m) => m.organization.id === organizationId);
+  const capabilities = capabilitiesFor(membership?.role ?? (me ? 'viewer' : null));
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [view, setView] = useState<GenerationView | null>(null);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const startedPollingAt = useRef<number | null>(null);
@@ -104,48 +99,14 @@ export default function GeneratePage({
     }
   }
 
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
-    );
-  }
-
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <div className="flex flex-wrap justify-between gap-4">
-        <Link
-          href={`/app/campaigns/${campaignId}/creative`}
-          className="text-sm text-muted hover:underline"
-        >
-          ← Creative Specification
-        </Link>
-        {/* Only once there is something to judge. */}
-        {view && view.assets.length ? (
-          <Link
-            href={`/app/campaigns/${campaignId}/evaluate`}
-            className="text-sm text-muted hover:underline"
-          >
-            Evaluate creatives →
-          </Link>
-        ) : null}
-      </div>
-
+    <>
       {error && !campaign ? (
         <div className="mt-4">
           <ErrorState
             title={error.code === 'NOT_FOUND' ? 'Campaign not found' : 'Could not load this page'}
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? () => void load() : undefined}
           />
@@ -156,94 +117,73 @@ export default function GeneratePage({
         </div>
       ) : (
         <div className="mt-4 space-y-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">{campaign.title}</h1>
-              <p className="mt-1 text-sm text-muted">
-                {view.can_generate
-                  ? `Generating from approved specification v${view.specification_version}.`
-                  : 'Generation is not open yet.'}
-              </p>
-            </div>
-            {view.can_generate ? (
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={busy || pending}
-                  onClick={() => void run(() => api.compilePrompts(campaignId, organizationId))}
-                  className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40 disabled:opacity-50"
-                >
-                  Compile prompts
-                </button>
-                <button
-                  type="button"
-                  disabled={busy || pending}
-                  onClick={() => void run(() => api.startGeneration(campaignId, organizationId))}
-                  className="rounded-md border border-line bg-line/30 px-3 py-1.5 text-sm hover:bg-line/50 disabled:opacity-50"
-                >
-                  {pending ? 'Generating…' : 'Generate creatives'}
-                </button>
-              </div>
-            ) : null}
+          {/* The heading and the stage. The control that generates belongs to
+              the studio below — a second one here meant two buttons starting
+              the same work, one of them labelled differently. */}
+          <div>
+            <h2 className="text-h2">Generate</h2>
+            <p className="mt-1 max-w-content text-body text-muted">
+              {view.can_generate
+                ? `Building the visuals from approved creative plan v${view.specification_version}.`
+                : 'Generation is not open yet.'}
+            </p>
           </div>
 
           {error ? <ErrorState message={error.message} requestId={error.requestId} /> : null}
 
-          {!view.can_generate ? (
-            <EmptyState
-              title="Approve the Creative Specification first"
-              description={
-                view.blocked_reason ??
-                'Generation works from an approved plan, so the image a provider returns can always be traced back to something a human signed off.'
-              }
-              action={
-                <Link
-                  href={`/app/campaigns/${campaignId}/creative`}
-                  className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40"
-                >
-                  Back to the specification
-                </Link>
-              }
-            />
-          ) : (
-            <>
-              <JobBoard
-                view={view}
-                busy={busy}
-                onRetry={(jobId) =>
-                  void run(() => api.retryGenerationJob(campaignId, jobId, organizationId))
-                }
-              />
+          <GenerationStudio
+            view={view}
+            capabilities={capabilities}
+            busy={busy || pending}
+            onGenerate={() => void run(() => api.startGeneration(campaignId, organizationId))}
+            onRetry={(jobId) =>
+              void run(() => api.retryGenerationJob(campaignId, jobId, organizationId))
+            }
+          />
 
-              {view.assets.length ? (
-                <PlateGallery
-                  assets={view.assets}
-                  jobs={view.jobs}
-                  selectedIds={selectedIds}
-                  onToggleSelect={(id) =>
-                    setSelectedIds((current) =>
-                      current.includes(id)
-                        ? current.filter((existing) => existing !== id)
-                        : [...current, id],
-                    )
-                  }
-                />
-              ) : view.jobs.length === 0 ? (
-                <EmptyState
-                  title="Nothing generated yet"
-                  description="Compile the prompts to see exactly what each provider will be asked, or generate straight away."
-                />
-              ) : null}
+          {/*
+            What each provider was actually asked.
 
-              {view.canonical_prompt ? (
-                <CanonicalPromptPanel prompt={view.canonical_prompt} />
-              ) : null}
-              <ProviderPrompts prompts={view.prompts} />
-            </>
-          )}
+            Folded away rather than removed: a prompt is a build artefact and
+            the people who need it really need it, but it is not what this
+            screen is about. The canonical prompt is provider-neutral; each
+            provider's own rendering sits beside it.
+          */}
+          {view.canonical_prompt || view.prompts.length > 0 ? (
+            <details className="rounded-lg border border-line">
+              <summary className="cursor-pointer px-5 py-4 text-label uppercase text-muted transition-colors duration-fast hover:text-ink">
+                What the providers were asked
+              </summary>
+              <div className="space-y-6 border-t border-line p-5">
+                {view.canonical_prompt ? (
+                  <CanonicalPromptPanel prompt={view.canonical_prompt} />
+                ) : null}
+                <ProviderPrompts prompts={view.prompts} />
+                {/* Recompiling belongs beside what it recompiles. In the page
+                    header it sat next to "Generate" looking like a step
+                    someone had to take first, which it is not — generation
+                    compiles for itself. */}
+                {view.can_generate && capabilities.can('edit_campaign') ? (
+                  <div className="border-t border-line pt-5">
+                    <Button
+                      variant="secondary"
+                      disabled={busy || pending}
+                      onClick={() => void run(() => api.compilePrompts(campaignId, organizationId))}
+                    >
+                      Compile these again from the plan
+                    </Button>
+                    <p className="mt-2 text-caption text-muted">
+                      A prompt is a build artefact: it is regenerated from the approved plan, and
+                      never edited here.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            </details>
+          ) : null}
         </div>
       )}
-    </AppShell>
+    </>
   );
 }
 

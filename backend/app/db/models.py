@@ -27,6 +27,7 @@ from sqlalchemy.dialects.postgresql import CITEXT, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Entity, Timestamps, TimestampsWithUpdate
+from app.domain.common import CampaignRecordStatus
 
 ROLES = ("admin", "brand_manager", "marketing", "designer", "viewer")
 
@@ -301,9 +302,11 @@ class BrandFactRow(TimestampsWithUpdate, Entity):
 class CampaignRow(TimestampsWithUpdate, Entity):
     __tablename__ = "campaigns"
     __table_args__ = (
+        # Generated from `CampaignRecordStatus` rather than restated here, so
+        # adding a status to the enum without a migration fails loudly at
+        # `alembic check` instead of silently at the first insert.
         CheckConstraint(
-            "status in ('DRAFT','INTERVIEWING','SPECIFICATION_READY',"
-            "'SPECIFICATION_CONFIRMED','FAILED','CANCELLED')",
+            "status in (" + ",".join(f"'{s.value}'" for s in CampaignRecordStatus) + ")",
             name="status_valid",
         ),
         Index("ix_campaigns_organization_id", "organization_id"),

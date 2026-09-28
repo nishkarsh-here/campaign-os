@@ -5,6 +5,25 @@ call, an API key, or credit. `conftest.py` forces `LLM_PROVIDER=mock`,
 `IMAGE_PROVIDER=mock`, `EMBEDDING_PROVIDER=mock`, `STORAGE_PROVIDER=local` and
 fails the session if a real provider is selected under `APP_ENV=test`.
 
+Two things in this repository deliberately reach an external service, and
+neither runs by default:
+
+- **`scripts/gemini_*_smoke_test.py`** — three hand-run scripts. Not tests,
+  never collected by pytest. See [DEPLOYMENT §5](DEPLOYMENT.md#5-providers).
+- **`tests/integration/test_gemini_image_live.py`** — marked `live`, and
+  `pyproject.toml` sets `addopts = "-m 'not live'"`, so `uv run pytest`
+  deselects it and CI can never come to depend on an external API or a valid
+  card. It also skips itself when `GEMINI_API_KEY` is absent. Opting in is
+  deliberate:
+
+  ```bash
+  GEMINI_API_KEY=… uv run pytest -m live
+  ```
+
+  It generates **exactly one image** — `MAX_SMOKE_TEST_IMAGES = 1`, asserted
+  rather than assumed, because a suite that quietly produced a dozen is a way
+  to lose money by running the tests twice.
+
 ```bash
 cd backend
 uv run pytest                 # everything
@@ -29,7 +48,31 @@ uv run pytest -m e2e          # the full campaign walk
   deterministic prompt per adapter; snapshot-tested so prompt drift is visible in
   a diff and reviewed rather than discovered in an image.
 - **Provider adapters** — Protocol conformance for every implementation; retry,
-  timeout and error mapping against a fake transport.
+  timeout and error mapping against a fake transport. The three Gemini
+  adapters are each driven through a fake SDK client
+  (`tests/test_llm_providers.py`, `tests/test_embedding_providers.py`,
+  `tests/test_image_providers.py`), so every branch of the
+  outcome-to-typed-error mapping is verified without a credit being spent —
+  which is the point of the abstraction being a Protocol rather than a base
+  class. Three things are asserted there that nothing else can assert:
+  `structured()` returns a *validated Pydantic instance*, never a `dict` and
+  never a raw SDK object; a reply that will not validate gets exactly one
+  schema-constrained repair pass and then becomes a typed
+  `ProviderInvalidResponse`, with nothing coerced or defaulted in between;
+  and an embedding of the wrong width is **reported, never truncated**.
+- **Image provider hardening** — returned format is *sniffed from the bytes*
+  and PNG, JPEG and WebP are all recognised, so a row never claims a type the
+  payload contradicts; provenance (provider, model, request id, latency,
+  requested frame, returned MIME) is asserted; reference images become content
+  blocks, a reference with no bytes is skipped rather than fatal, and more
+  than the model accepts are trimmed. **Retry behaviour is tested as a
+  spending control**: a retryable failure is repeated once by default, the
+  limit is honoured and capped, a recovered retry returns the image, and a
+  refusal, a bad request or a rejected credential is *never* repeated.
+- **Credentials** — `TestSecretsNeverReachTheLogs` in the LLM and image suites:
+  the key never reaches a user-facing message, a key-shaped string in a vendor
+  error is redacted out of `detail` (by shape, in `ProviderError.__init__`),
+  and nothing key-shaped appears in the request body the adapter builds.
 - **Evaluator / Guardian** — scoring maths, ranking order, tie-breaks, and that a
   prohibited-claim violation always yields `NEEDS_REVISION`.
 - **Revision delta** — KEEP fields are provably unchanged after applying a delta.

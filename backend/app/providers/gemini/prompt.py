@@ -25,9 +25,39 @@ GEMINI_ASPECT_RATIOS: tuple[str, ...] = (
     "21:9",
 )
 
+#: What we are asking for, before any of the campaign's own content.
+#:
+#: Craft direction, not campaign truth — which is why it lives in the adapter
+#: and not in the compiler (ADR-005). The Canonical Prompt says *what* the
+#: picture is of; this says what a good one looks like. Every line of it is
+#: about photography, so nothing here can quietly become a creative decision
+#: the Creative Specification did not make.
 _PREAMBLE = (
-    "Generate a photographic advertising plate — the background visual only, "
-    "with no text of any kind rendered in the image."
+    "Generate a premium commercial advertising photograph to be used as a "
+    "background plate. Real photography, not illustration: physically "
+    "plausible materials, natural shadow falloff, controlled highlights, "
+    "believable reflections, and cinematic depth of field with a clear focal "
+    "subject. Editorial art direction of the standard expected in a national "
+    "campaign — deliberate composition, intentional negative space, and a "
+    "strong visual hierarchy."
+)
+
+#: The failure modes worth naming outright. A model asked only for "premium"
+#: will still hand back a flat vector poster; asked not to, it usually will
+#: not. Kept separate from the campaign's own negative constraints so a brand
+#: prohibition is never confused with a house style note.
+_HOUSE_EXCLUSIONS = (
+    "flat vector illustration, generic geometric shapes, decorative gradients, "
+    "cartoon or 3D-render styling, presentation-slide layouts, mocked-up user "
+    "interfaces, collage, stock-photo cliché, visible watermarks or signatures"
+)
+
+#: Restated last because it is the one instruction that must survive
+#: everything above it (ADR-006). The plate carries no brand text; the
+#: deterministic renderer sets every word.
+_NO_TEXT = (
+    "Render no text, lettering, numerals, captions, labels, logos or brand "
+    "marks anywhere in the image. Type is composited afterwards."
 )
 
 
@@ -49,6 +79,8 @@ class GeminiPromptAdapter:
             # appended to a line, so a long exclusion list cannot be read as
             # part of the scene description.
             body.append(f"Do not include: {negative}.")
+        body.append(f"Avoid: {_HOUSE_EXCLUSIONS}.")
+        body.append(_NO_TEXT)
 
         return ModelPrompt(
             campaign_id=canonical.campaign_id,

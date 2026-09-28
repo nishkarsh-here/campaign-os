@@ -108,7 +108,16 @@ def _specification(campaign_id: uuid.UUID, version: int = 1) -> CreativeSpecific
     )
 
 
-async def _seed(session, org, storage, *, with_logo: bool = True, approved: bool = True):
+async def _seed(
+    session,
+    org,
+    storage,
+    *,
+    with_logo: bool = True,
+    approved: bool = True,
+    plate_mime: str = "image/png",
+    plate_colour: tuple[int, int, int] | None = None,
+):
     """A campaign with an approved specification, a selected plate and a logo —
     everything final composition needs and nothing it does not."""
     brand = BrandProfileRow(
@@ -168,7 +177,15 @@ async def _seed(session, org, storage, *, with_logo: bool = True, approved: bool
     )
     await session.flush()
 
-    plate = await _plate(session, org, campaign, specification, storage)
+    plate = await _plate(
+        session,
+        org,
+        campaign,
+        specification,
+        storage,
+        plate_mime=plate_mime,
+        plate_colour=plate_colour,
+    )
     return campaign, specification, plate
 
 
@@ -178,7 +195,16 @@ def _png(width: int, height: int) -> bytes:
     return buffer.getvalue()
 
 
-async def _plate(session, org, campaign, specification, storage) -> GeneratedAssetRow:
+async def _plate(
+    session,
+    org,
+    campaign,
+    specification,
+    storage,
+    *,
+    plate_mime: str = "image/png",
+    plate_colour: tuple[int, int, int] | None = None,
+) -> GeneratedAssetRow:
     # A complete `CanonicalPrompt`, not a stub: the overview read model
     # validates this payload back into the model, and a fixture that only
     # half-fills it fails there for a reason that has nothing to do with the
@@ -243,8 +269,23 @@ async def _plate(session, org, campaign, specification, storage) -> GeneratedAss
     (image,) = await MockImageProvider().generate(
         ImageRequest(prompt=f"plate for {campaign.id}", aspect_ratio="1:1")
     )
-    key = f"org-{org.id}/campaign-{campaign.id}/generated/{uuid.uuid4().hex}.png"
-    await storage.put(key, image.data, mime_type="image/png")
+    # Gemini only ever returns JPEG; the mock renders PNG. Re-encoding the
+    # mock's own pixels keeps the two cases identical apart from the format.
+    data = image.data
+    if plate_colour is not None:
+        # A flat, known colour, so a test can prove the plate's own pixels
+        # reached the canvas rather than only that something was drawn.
+        buffer = io.BytesIO()
+        Image.new("RGB", (image.width, image.height), plate_colour).save(buffer, format="PNG")
+        data = buffer.getvalue()
+    if plate_mime == "image/jpeg":
+        buffer = io.BytesIO()
+        with Image.open(io.BytesIO(data)) as decoded:
+            decoded.convert("RGB").save(buffer, format="JPEG", quality=95)
+        data = buffer.getvalue()
+    extension = "jpg" if plate_mime == "image/jpeg" else "png"
+    key = f"org-{org.id}/campaign-{campaign.id}/generated/{uuid.uuid4().hex}.{extension}"
+    await storage.put(key, data, mime_type=plate_mime)
     row = GeneratedAssetRow(
         organization_id=org.id,
         campaign_id=campaign.id,
@@ -256,7 +297,7 @@ async def _plate(session, org, campaign, specification, storage) -> GeneratedAss
         model="mock-image-1",
         kind="VISUAL_PLATE",
         storage_key=key,
-        mime_type="image/png",
+        mime_type=plate_mime,
         width=image.width,
         height=image.height,
         meta={},
@@ -356,6 +397,55 @@ class TestRendering:
         image = Image.open(io.BytesIO(stored))
         assert image.size == (final.width, final.height)
         assert image.format == "PNG"
+
+    async def test_a_jpeg_plate_composes_and_renders(self, session, workspace, storage) -> None:
+        """M9 compatibility with what Gemini actually returns.
+
+        The image model only produces JPEG, so every real plate arriving from
+        it is one. Composition must be indifferent to that — and the *output*
+        must stay PNG, because the layer code draws is lossless and the
+        `LayoutSpec`, not the image, is the source of truth (ADR-014).
+        """
+        campaign, specification, plate = await _seed(
+            session, workspace.org, storage, plate_mime="image/jpeg"
+        )
+        assert plate.mime_type == "image/jpeg", "the fixture really is a JPEG plate"
+        service = _service(session, _principal(workspace), storage)
+
+        view = await service.compose(campaign.id)
+        assert view.layout is not None
+        assert view.layout.plate_storage_key == plate.storage_key
+        assert view.report is not None and view.report.can_render()
+
+        final = await service.render_final(campaign.id, channel=Channel.INSTAGRAM_POST)
+
+        assert final.source_asset_id == plate.id
+        assert final.specification_version == specification.version
+        assert final.mime_type == "image/png"
+        stored = await storage.get(final.storage_key)
+        with Image.open(io.BytesIO(stored)) as image:
+            assert image.format == "PNG"
+            assert image.size == CHANNEL_DIMENSIONS[Channel.INSTAGRAM_POST]
+
+    async def test_a_jpeg_plates_own_pixels_reach_the_canvas(
+        self, session, workspace, storage
+    ) -> None:
+        """Not just 'it did not crash'. A composition that silently dropped
+        the plate would still be a valid PNG of the right size — and still be
+        full of colour, because the text and the scrim supply plenty of it. So
+        assert the plate's *own* colour is what the canvas is made of."""
+        campaign, _, _ = await _seed(
+            session, workspace.org, storage, plate_mime="image/jpeg", plate_colour=(200, 30, 40)
+        )
+        service = _service(session, _principal(workspace), storage)
+        await service.compose(campaign.id)
+        final = await service.render_final(campaign.id, channel=Channel.INSTAGRAM_POST)
+
+        with Image.open(io.BytesIO(await storage.get(final.storage_key))) as image:
+            # Top corner: above the scrim and clear of every text box.
+            red, green, blue = image.convert("RGB").getpixel((8, 8))
+        # Not exact: the plate is JPEG-encoded and then resized to the frame.
+        assert abs(red - 200) <= 4 and abs(green - 30) <= 4 and abs(blue - 40) <= 4
 
     async def test_the_storage_key_is_generated_not_derived_from_input(
         self, session, workspace, storage

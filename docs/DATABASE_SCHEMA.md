@@ -619,7 +619,7 @@ create table final_assets (
   id uuid primary key default gen_random_uuid(),
   campaign_id uuid not null references campaigns(id) on delete cascade,
   source_asset_id uuid references generated_assets(id),
-  channel text not null,             -- instagram_post | story | linkedin | banner | print_a3 ...
+  channel text not null,             -- instagram_post | instagram_portrait | story | linkedin | banner | print_a3 ...
   width int not null, height int not null,
   layout_spec jsonb not null,        -- domain.layout.LayoutSpec, inline: the exact
                                      -- recipe that produced this file. Editing the

@@ -100,30 +100,153 @@ request: every byte-serving route resolves a scope-checked row first and reads
 
 ## 5. Providers
 
-| Variable | Effect |
-|---|---|
-| `LLM_PROVIDER` | `mock` \| `gemini` |
-| `IMAGE_PROVIDER` | `mock` \| `gemini` \| `leonardo` |
-| `EMBEDDING_PROVIDER` | `mock` \| `gemini` |
-| `SEARCH_PROVIDER` | `none` \| `tavily` |
+**Two vendors are built: `mock` and `gemini`.** The registry also accepts
+`leonardo`, `tavily` and `supabase`, and then fails to import an adapter that
+does not exist in this build. Those are Protocol seams — the place a fourth
+vendor would slot in without touching a node or a service — not working
+integrations, and selecting one fails at startup.
+
+| Variable | Built | Accepted but not implemented |
+|---|---|---|
+| `LLM_PROVIDER` | `mock` · `gemini` | — |
+| `IMAGE_PROVIDER` | `mock` · `gemini` | `leonardo` |
+| `EMBEDDING_PROVIDER` | `mock` · `gemini` | — |
+| `STORAGE_PROVIDER` | `local` | `supabase` |
+| `SEARCH_PROVIDER` | `none` | `tavily` |
 
 Selecting a provider without its credential **fails at startup**, not at the
 first user request — a missing key is a configuration mistake, and discovering
-it three minutes into a demo is the worst possible time.
+it three minutes into a demo is the worst possible time. So does a blank model
+id. Whether an id names a model that *exists* can only be answered by the
+provider; that is what the smoke tests below are for.
 
-Embedding dimensions are checked at startup too: a provider whose vector width
-disagrees with the column is caught at boot rather than at the first retrieval.
+### Gemini
 
-Switching `EMBEDDING_PROVIDER` after documents have been ingested invalidates
-every stored vector — they were produced by a different model. Re-ingest, or
-keep the provider fixed for the life of the database.
+| Variable | Default | Notes |
+|---|---|---|
+| `GEMINI_LLM_MODEL` | `gemini-3.8-flash` | Reasoning, text and multimodal. A stable id, not a `-preview` or `-latest` alias: a plan that changes between two runs is not reproducible. Must accept image input — reference analysis, evaluation and the Brand Guardian all hand it one. |
+| `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image` | Nano Banana 2, the current model. Separate capability, separate cadence — changing the reasoning model must never change what draws the plate. `gemini-2.5-flash-image` is legacy and the docs recommend transitioning off it. |
+| `IMAGE_MAX_RETRIES` | `1` | Extra attempts after a *retryable* image failure. Every attempt is billable; capped at 3. |
+| `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | Stable. `gemini-embedding-2-preview` exists and is not used here. |
+| `GEMINI_EMBEDDING_DIMENSIONS` | `1536` | Width **requested of the API**, never trimmed afterwards. |
+
+The key is read once, in `app/config.py`, and reaches nothing but the adapter
+that authenticates with it. It never appears in a response, a log line, a
+`ProviderError.detail` (redaction is by shape, in `ProviderError.__init__`) or
+anything in the browser bundle. The smoke tests print a four-character suffix
+so two people can tell whether they hold the same key; nothing prints more.
+
+Embedding dimensions are checked at startup: a provider whose vector width
+disagrees with `brand_chunks.embedding` is caught at boot rather than at the
+first retrieval, and the Gemini adapter checks *again* against what the API
+actually returned. A vector of the wrong width is reported, never truncated —
+trimming would turn a misconfiguration into retrieval that is merely bad,
+which is far harder to diagnose than a boot failure.
+
+Switching `EMBEDDING_PROVIDER` or `GEMINI_EMBEDDING_DIMENSIONS` after documents
+have been ingested invalidates every stored vector — they were produced by a
+different model or a different width. Re-ingest, or keep both fixed for the
+life of the database.
+
+### Verifying a credential
+
+Three scripts, and the only code in this repository that deliberately reaches
+an external service. Each makes one controlled request, prints a safe summary,
+never prints the key, and exits `0` verified / `1` credential problem / `2`
+something else:
+
+```bash
+cd backend
+LLM_PROVIDER=gemini       uv run python scripts/gemini_llm_smoke_test.py
+EMBEDDING_PROVIDER=gemini uv run python scripts/gemini_embedding_smoke_test.py
+IMAGE_PROVIDER=gemini     uv run python scripts/gemini_smoke_test.py
+```
+
+Run them before a deploy that sets `*_PROVIDER=gemini`. The reasoning and
+embedding scripts pass against a Google AI Studio key; the image one does not
+— see §9.
+
+One trap worth knowing: an exported `GEMINI_API_KEY` in your shell **beats**
+the one in `backend/.env`, because environment variables outrank the env file.
+A new key that appears not to work is usually an old one still exported.
 
 ## 6. Authentication
 
-`AUTH_PROVIDER=dev_stub` authenticates **every caller as the same user**. It
+Two providers, selected by `AUTH_PROVIDER`, behind one seam. The provider
+answers only *who is this?*; membership and organization scope are resolved
+separately in `app/api/deps.py` and are identical in both modes (ADR-002).
+
+### Development — `dev_stub`
+
+Authenticates **every caller as the same user** and ignores the credential. It
 raises at construction when `APP_ENV=production`, so a production deploy cannot
-start with it by accident. That guard is the whole of the protection — set
-`AUTH_PROVIDER=supabase` and `APP_ENV=production` together.
+start with it by accident. The offline demo depends on this and needs no
+identity provider, no keys and no network.
+
+### Production — `supabase`
+
+| Variable | Purpose |
+|---|---|
+| `SUPABASE_URL` | The project. Also used by storage. |
+| `SUPABASE_ANON_KEY` | The publishable key. Identifies the project when verifying a caller's token. |
+
+Both are required when `AUTH_PROVIDER=supabase`; a missing one is a **startup
+failure**, not a 401 that reads to a user like a bad password.
+
+**The anon key is public by design.** It carries no privilege of its own and is
+inlined into the browser bundle so the sign-in page can reach Supabase
+directly. `SUPABASE_SERVICE_ROLE_KEY` is storage's alone — the auth provider
+never sends it, and it must never reach a browser.
+
+**How a token is verified.** The bearer credential is sent to Supabase's own
+`GET /auth/v1/user`; `200` means valid. This is the check Supabase documents
+for server-side validation, and it is chosen over verifying the JWT locally
+with the project's shared secret — which Supabase recommends against. The
+trade is a network call per request to a single-region Auth server, bounded by
+a 30-second cache keyed by a digest of the token (never the token). The gain is
+that a signed-out or revoked session stops working immediately rather than at
+token expiry.
+
+**Identity is the subject**, `users.auth_subject` ← Supabase's `id`. There is
+no fallback to email, because an email can be reassigned between people and
+treating it as identity is how one person inherits another's memberships
+(M1_SECURITY_AUDIT §A-1). An account with no email is refused rather than
+provisioned with a placeholder.
+
+> **Verified offline only.** The provider is fully covered by tests driving a
+> fake Supabase through `respx`, and `AUTH_PROVIDER=supabase` with
+> `APP_ENV=production` is proven to construct. It has **not** been run against
+> a real Supabase project. Treat the first deploy as the verification step.
+
+### Serving media to a browser — `MEDIA_URL_SECRET`
+
+Neither header above reaches an `<img src>`: a browser cannot set
+`Authorization` or `X-Organization-Id` on an image, a video or a download link.
+So every media `url` the API returns carries a short-lived signature naming one
+row, one organization and one user (ADR-017, `app/api/media_links.py`). The byte
+route verifies it, re-checks membership, and then resolves the row through the
+organization-scoped repository exactly as a header-authenticated request does.
+
+**Set `MEDIA_URL_SECRET` in production.** The app refuses to start without it
+when `APP_ENV=production`, for a reason worth stating: unset, each process
+generates its own key at startup, and behind a load balancer instance A cannot
+verify a link instance B signed. The symptom is images that appear on one
+refresh and not the next — an intermittent bug that looks like flaky storage and
+is not. Generate one per environment and give every instance the same value:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Rotating it invalidates every link already on a rendered page, so a user's open
+tab shows broken images until they reload. Rotate on a deploy, not mid-session,
+and treat it as a secret: it is a signing key, and anyone holding it can mint a
+link to any row whose id they know.
+
+`MEDIA_URL_TTL_S` (default 900) is how long a link lives. Long enough to render
+a page and open an image in a new tab; short enough that a link caught in an
+access log, a proxy buffer or a `Referer` header is worthless by the time
+anyone reads it. Raising it past an hour trades that away for very little.
 
 ## 7. Environment variables
 
@@ -141,6 +264,8 @@ DATABASE_URL_SYNC=postgresql://…
 CORS_ORIGINS=https://app.example.com
 API_HOST=0.0.0.0
 AUTH_PROVIDER=supabase
+# Shared by every instance. The app refuses to start without it in production.
+MEDIA_URL_SECRET=…
 STORAGE_PROVIDER=supabase
 SUPABASE_URL=…
 SUPABASE_SERVICE_ROLE_KEY=…
@@ -191,6 +316,41 @@ discover is an outage.
   guarantee would need leases and a coordinator — which is the worker
   architecture this product deliberately does not have.
 - **Local storage does not work behind more than one instance.** See §4.
+- **Only two vendors are implemented.** `mock` and `gemini`. `leonardo`,
+  `tavily` and `supabase` storage are names the registry accepts and then
+  fails to import — Protocol seams kept honest by the fact that selecting one
+  fails at boot rather than at the first request.
+- **Live Gemini image generation is still unverified**, though the defect
+  that blocked it is fixed. Reasoning and embeddings are verified against a
+  Google AI Studio key (2026-09-23); images are not. Two independent causes
+  were found, and only one of them was ours:
+  1. **The adapter asked for a format the provider does not produce.** It
+     hardcoded `response_format.mime_type = "image/png"`, and both
+     `gemini-2.5-flash-image` and `gemini-3.1-flash-image` reject that with
+     `400 invalid_request` — *"Supported values: 'image/jpeg'"*. **Fixed:**
+     `RESPONSE_MIME_TYPE = "image/jpeg"` in
+     `app/providers/gemini/image.py`, covered by regression tests that fail if
+     it is ever set back. This governs the *plate only* — deterministic
+     rendering is still PNG, and composition still outputs PNG (ADR-014).
+  2. **Image generation is not available on the free tier.** `429` —
+     *"Rate limit exceeded for model gemini-3.1-flash-image (limit: 0 input
+     tokens per minute on Free Tier). Please upgrade your tier at
+     https://ai.dev/rate-limit"* — returned after ~165 seconds of queueing.
+     A billing-enabled key is required, and nothing in this repository can
+     work around it.
+
+     **That queueing delay matters operationally.** The 429 arrives *after*
+     `GENERATION_TIMEOUT_S` (120s), so a quota-blocked account surfaces to
+     users as "did not respond in time" rather than a rate-limit message, and
+     with `IMAGE_MAX_RETRIES=1` it costs two full timeouts before failing. If
+     you run against a tier that queues, raise the timeout above the
+     provider's queueing time so the real reason reaches the job row.
+
+  So the adapter is believed correct and is *not* proven so: the fix was
+  verified against a fake SDK client and a JPEG plate all the way through
+  composition, never against the live API. Run
+  `scripts/gemini_smoke_test.py` on a billed key before claiming otherwise.
+  Mock image generation is unaffected and remains the guaranteed path.
 - **There is no rate limiting.** Provider spend is bounded by the per-batch
   image count and the timeouts, not by request volume. Put a rate limit at the
   edge before exposing this publicly.

@@ -52,6 +52,8 @@ persisted, resumable and visible in the UI.
 | Three "distinct" directions come back samey | the core value prop is *choice* | distinctness constraint in the prompt, plus an automated similarity check that triggers one regeneration |
 | Interviewer never stops asking | ruins the first impression | explicit sufficiency check against required brief fields + hard question cap |
 | Image model cannot render brand text | corporate creatives look fake | ADR-006 — deterministic composition; never ask the model for text |
+| Image generation needs a billed account | no plates without one | API-only by decision (ADR-015); `IMAGE_PROVIDER=mock` is a first-class offline path, so the demo and the whole test suite never need a credential |
+| Runaway provider spend | a prepaid balance is finite | `IMAGE_MAX_RETRIES` defaults to 1 and is capped at 3; only a timeout, rate limit or 5xx is retried; the live test generates exactly one image and is deselected by default |
 | LangGraph API churn | orchestration is load-bearing | pinned version; graph assembly isolated to `app/graph/build.py`; nodes are plain async functions, testable without LangGraph |
 | pgvector dimension mismatch | silent retrieval garbage | dimension asserted against the provider at startup; migration required to change |
 | Scope creep into Level 4 | nothing ships | the ladder is the contract; L4 items only after M10 |

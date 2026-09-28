@@ -9,8 +9,9 @@ is a 404 here exactly as a project or brand id is.
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
 from fastapi.responses import Response
 
 from app.api.deps import (
@@ -19,11 +20,14 @@ from app.api.deps import (
     GenerationRunnerDep,
     GuardianRunnerDep,
     LLMDep,
+    MediaLinkDep,
     PrincipalDep,
     SessionDep,
     SettingsDep,
     StorageDep,
+    media_access,
 )
+from app.api.media_links import MediaKind, MediaLink
 from app.api.routers.composition import final_asset_view
 from app.api.schemas import (
     AnswerRequest,
@@ -184,16 +188,17 @@ def _turn(turn: DiscoveryTurn) -> DiscoveryTurnResponse:
     )
 
 
-def _reference(row: CampaignReferenceRow) -> CampaignReferenceView:
+def _reference(row: CampaignReferenceRow, link: MediaLink) -> CampaignReferenceView:
     return CampaignReferenceView(
         id=str(row.id),
         filename=row.filename,
         mime_type=row.mime_type,
         bytes=row.bytes,
         note=row.note,
-        # Served through the API so scope is checked on read; the browser
-        # never addresses storage directly.
-        url=f"/v1/campaigns/{row.campaign_id}/references/{row.id}/content",
+        # Served through the API so scope is checked on read; the browser never
+        # addresses storage directly. Signed and short-lived, because an
+        # `<img src>` cannot carry the headers that normally prove scope.
+        url=link.reference(row.campaign_id, row.id),
         status=ReferenceStatus(row.status),
         analysis=ReferenceAnalysis.model_validate(row.analysis) if row.analysis else None,
         error=row.error,
@@ -374,6 +379,7 @@ async def list_references(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -381,7 +387,9 @@ async def list_references(
     service = _service(principal, session, settings, llm, embeddings)
     campaign = await service.get_row(_uuid(campaign_id, "Campaign"))
     repo = CampaignReferenceRepository(session, uuid.UUID(principal.organization_id))
-    return ReferenceList(items=[_reference(r) for r in await repo.list_for_campaign(campaign.id)])
+    return ReferenceList(
+        items=[_reference(r, link) for r in await repo.list_for_campaign(campaign.id)]
+    )
 
 
 @router.post(
@@ -393,6 +401,7 @@ async def upload_reference(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
     llm: LLMDep,
@@ -437,21 +446,26 @@ async def upload_reference(
     # than a brief wait. Failure is a recorded state, never an exception.
     intelligence = ReferenceIntelligenceService(session, organization_id, storage=storage, llm=llm)
     analysed = await intelligence.analyze(row.id)
-    return _reference(analysed or row)
+    return _reference(analysed or row, link)
 
 
 @router.get("/{campaign_id}/references/{reference_id}/content")
 async def get_reference_content(
     campaign_id: str,
     reference_id: str,
-    principal: PrincipalDep,
+    principal: Annotated[Principal, Depends(media_access(MediaKind.REFERENCE, "reference_id"))],
     session: SessionDep,
     settings: SettingsDep,
     storage: StorageDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
 ) -> Response:
-    """Serve reference bytes. The storage key comes from a scope-checked row."""
+    """Serve reference bytes. The storage key comes from a scope-checked row.
+
+    The caller proves themselves with the usual headers or with a signed link
+    bound to this reference; either way `principal` is a real, membership-
+    checked principal by the time the body runs, and the lookup below is
+    unchanged."""
     service = _service(principal, session, settings, llm, embeddings)
     campaign = await service.get_row(_uuid(campaign_id, "Campaign"))
     repo = CampaignReferenceRepository(session, uuid.UUID(principal.organization_id))
@@ -469,6 +483,7 @@ async def reanalyze_reference(
     reference_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
     llm: LLMDep,
@@ -488,7 +503,7 @@ async def reanalyze_reference(
         raise NotFound("Reference not found.")
 
     intelligence = ReferenceIntelligenceService(session, organization_id, storage=storage, llm=llm)
-    return _reference(await intelligence.analyze(row.id, force=True) or row)
+    return _reference(await intelligence.analyze(row.id, force=True) or row, link)
 
 
 @router.post(
@@ -499,6 +514,7 @@ async def accept_reference_analysis(
     reference_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -514,7 +530,7 @@ async def accept_reference_analysis(
         raise ValidationFailed(
             "This reference has not been analysed yet.", details={"field": "reference_id"}
         )
-    return _reference(await repo.accept(row))
+    return _reference(await repo.accept(row), link)
 
 
 # --------------------------------------------------------------- preferences
@@ -776,7 +792,9 @@ def _generation(
     )
 
 
-def _generation_view(view: ServiceGenerationView, campaign_id: str) -> GenerationView:
+def _generation_view(
+    view: ServiceGenerationView, campaign_id: str, link: MediaLink
+) -> GenerationView:
     batch = view.batch
     return GenerationView(
         campaign_id=view.campaign_id,
@@ -823,8 +841,9 @@ def _generation_view(view: ServiceGenerationView, campaign_id: str) -> Generatio
                 height=asset.height,
                 mime_type=asset.mime_type,
                 # A path, not a storage URL: the bytes are served through the
-                # API so the organization scope is checked on every read.
-                url=f"/v1/campaigns/{campaign_id}/assets/{asset.id}/content",
+                # API so the organization scope is checked on every read. The
+                # signature is how a browser proves that scope on an `<img>`.
+                url=link.generated_asset(campaign_id, asset.id),
                 specification_version=asset.specification_version,
                 created_at=asset.created_at,
             )
@@ -843,6 +862,7 @@ async def get_generation(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -854,7 +874,9 @@ async def get_generation(
     still running (API_SPEC §Polling contract).
     """
     service = _generation(principal, session, settings, llm, embeddings, storage)
-    return _generation_view(await service.current(_uuid(campaign_id, "Campaign")), campaign_id)
+    return _generation_view(
+        await service.current(_uuid(campaign_id, "Campaign")), campaign_id, link
+    )
 
 
 @router.post("/{campaign_id}/generation/compile", response_model=GenerationView)
@@ -862,6 +884,7 @@ async def compile_prompts(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -874,7 +897,7 @@ async def compile_prompts(
     """
     service = _generation(principal, session, settings, llm, embeddings, storage)
     return _generation_view(
-        await service.compile_prompts(_uuid(campaign_id, "Campaign")), campaign_id
+        await service.compile_prompts(_uuid(campaign_id, "Campaign")), campaign_id, link
     )
 
 
@@ -885,6 +908,7 @@ async def start_generation(
     runner: GenerationRunnerDep,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -922,7 +946,7 @@ async def start_generation(
             embeddings=embeddings,
             job_ids=pending,
         )
-    return _generation_view(view, campaign_id)
+    return _generation_view(view, campaign_id, link)
 
 
 @router.post(
@@ -937,6 +961,7 @@ async def retry_generation_job(
     runner: GenerationRunnerDep,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -962,7 +987,7 @@ async def retry_generation_job(
         embeddings=embeddings,
         job_ids=[new_job_id],
     )
-    return _generation_view(await service.current(campaign_uuid), campaign_id)
+    return _generation_view(await service.current(campaign_uuid), campaign_id, link)
 
 
 @router.get("/{campaign_id}/assets", response_model=GenerationView)
@@ -970,6 +995,7 @@ async def list_generated_assets(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -978,7 +1004,9 @@ async def list_generated_assets(
     """The gallery. Same shape as `GET /generation` so one client type covers
     both, and a plate always arrives with the job that produced it."""
     service = _generation(principal, session, settings, llm, embeddings, storage)
-    return _generation_view(await service.current(_uuid(campaign_id, "Campaign")), campaign_id)
+    return _generation_view(
+        await service.current(_uuid(campaign_id, "Campaign")), campaign_id, link
+    )
 
 
 @router.get("/{campaign_id}/assets/{asset_id}", response_model=GeneratedAssetView)
@@ -987,6 +1015,7 @@ async def get_generated_asset(
     asset_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
 ) -> GeneratedAssetView:
     """One plate's metadata."""
     asset = await _scoped_asset(principal, session, campaign_id, asset_id)
@@ -999,7 +1028,7 @@ async def get_generated_asset(
         width=asset.width,
         height=asset.height,
         mime_type=asset.mime_type,
-        url=f"/v1/campaigns/{campaign_id}/assets/{asset.id}/content",
+        url=link.generated_asset(campaign_id, asset.id),
         specification_version=asset.specification_version,
         created_at=asset.created_at,
     )
@@ -1009,12 +1038,15 @@ async def get_generated_asset(
 async def get_generated_asset_content(
     campaign_id: str,
     asset_id: str,
-    principal: PrincipalDep,
+    principal: Annotated[Principal, Depends(media_access(MediaKind.GENERATED_ASSET, "asset_id"))],
     session: SessionDep,
     storage: StorageDep,
 ) -> Response:
     """Serve the bytes. The storage key comes from a scope-checked row, never
-    from the request — the same rule as campaign references."""
+    from the request — the same rule as campaign references.
+
+    Reachable by headers or by a signed link bound to this asset, because an
+    `<img src>` can send neither header."""
     asset = await _scoped_asset(principal, session, campaign_id, asset_id)
     return Response(content=await storage.get(asset.storage_key), media_type=asset.mime_type)
 
@@ -1106,6 +1138,7 @@ async def _evaluation_view(
     campaign_id: str,
     principal: Principal,
     session: SessionDep,
+    link: MediaLink,
 ) -> EvaluationView:
     """Join the ranking to the plates it describes, in one response."""
     organization_id = uuid.UUID(principal.organization_id)
@@ -1133,7 +1166,7 @@ async def _evaluation_view(
                 reason=row.reason,
                 recommended=row.recommended,
                 asset=(
-                    _asset_view(assets[row.generated_asset_id], campaign_id)
+                    _asset_view(assets[row.generated_asset_id], campaign_id, link)
                     if row.generated_asset_id in assets
                     else None
                 ),
@@ -1155,7 +1188,7 @@ async def _evaluation_view(
     )
 
 
-def _asset_view(row: GeneratedAssetRow, campaign_id: str) -> GeneratedAssetView:
+def _asset_view(row: GeneratedAssetRow, campaign_id: str, link: MediaLink) -> GeneratedAssetView:
     return GeneratedAssetView(
         id=str(row.id),
         generation_job_id=str(row.generation_job_id),
@@ -1165,7 +1198,7 @@ def _asset_view(row: GeneratedAssetRow, campaign_id: str) -> GeneratedAssetView:
         width=row.width,
         height=row.height,
         mime_type=row.mime_type,
-        url=f"/v1/campaigns/{campaign_id}/assets/{row.id}/content",
+        url=link.generated_asset(campaign_id, row.id),
         specification_version=row.specification_version,
         created_at=row.created_at,
     )
@@ -1176,6 +1209,7 @@ async def get_evaluation(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -1188,7 +1222,7 @@ async def get_evaluation(
     """
     service = _evaluation(principal, session, settings, llm, embeddings, storage)
     view = await service.current(_uuid(campaign_id, "Campaign"))
-    return await _evaluation_view(view, campaign_id, principal, session)
+    return await _evaluation_view(view, campaign_id, principal, session, link)
 
 
 @router.post("/{campaign_id}/evaluation/start", response_model=EvaluationView, status_code=202)
@@ -1199,6 +1233,7 @@ async def start_evaluation(
     runner: EvaluationRunnerDep,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -1234,7 +1269,7 @@ async def start_evaluation(
             embeddings=embeddings,
             evaluation_ids=claimed,
         )
-    return await _evaluation_view(view, campaign_id, principal, session)
+    return await _evaluation_view(view, campaign_id, principal, session, link)
 
 
 @router.post(
@@ -1249,6 +1284,7 @@ async def retry_evaluation(
     runner: EvaluationRunnerDep,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -1270,7 +1306,7 @@ async def retry_evaluation(
         evaluation_ids=[claimed],
     )
     return await _evaluation_view(
-        await service.current(campaign_uuid), campaign_id, principal, session
+        await service.current(campaign_uuid), campaign_id, principal, session, link
     )
 
 
@@ -1280,6 +1316,7 @@ async def select_creative(
     body: SelectCreativeRequest,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -1298,7 +1335,7 @@ async def select_creative(
         _uuid(body.generated_asset_id, "Generated asset"),
         note=body.note,
     )
-    return await _evaluation_view(view, campaign_id, principal, session)
+    return await _evaluation_view(view, campaign_id, principal, session, link)
 
 
 # ------------------------------------------------------- guardian and revision
@@ -1320,7 +1357,10 @@ def _label_of(name: str) -> str:
 
 
 def _guardian_result_view(
-    row: BrandGuardianResultRow, campaign_id: str, asset: GeneratedAssetRow | None
+    row: BrandGuardianResultRow,
+    campaign_id: str,
+    asset: GeneratedAssetRow | None,
+    link: MediaLink,
 ) -> GuardianResultView:
     """One row, whatever state it is in.
 
@@ -1362,12 +1402,16 @@ def _guardian_result_view(
         error_code=str(error.get("code")) if error.get("code") else None,
         can_retry=status is JobStatus.FAILED,
         evaluated_at=result.evaluated_at if result else None,
-        asset=_asset_view(asset, campaign_id) if asset is not None else None,
+        asset=_asset_view(asset, campaign_id, link) if asset is not None else None,
     )
 
 
 async def _guardian_view(
-    view: ServiceGuardianView, campaign_id: str, principal: Principal, session: SessionDep
+    view: ServiceGuardianView,
+    campaign_id: str,
+    principal: Principal,
+    session: SessionDep,
+    link: MediaLink,
 ) -> GuardianView:
     organization_id = uuid.UUID(principal.organization_id)
     assets = {
@@ -1380,7 +1424,7 @@ async def _guardian_view(
         campaign_id=view.campaign_id,
         guardian_version=view.guardian_version,
         results=[
-            _guardian_result_view(row, campaign_id, assets.get(str(row.generated_asset_id)))
+            _guardian_result_view(row, campaign_id, assets.get(str(row.generated_asset_id)), link)
             for row in view.results
         ],
         in_flight=view.in_flight,
@@ -1476,6 +1520,7 @@ async def get_overview(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
     llm: LLMDep,
@@ -1528,7 +1573,7 @@ async def get_overview(
         revision_rounds=view.revision_rounds,
         composed_channels=[Channel(c) for c in view.composed_channels],
         available_channels=[Channel(c) for c in view.available_channels],
-        final_assets=[final_asset_view(row) for row in view.final_assets],
+        final_assets=[final_asset_view(row, link) for row in view.final_assets],
         latest_layout_version=view.latest_layout_version,
         next_stage=view.next_stage,
         next_action=view.next_action,
@@ -1540,6 +1585,7 @@ async def get_guardian(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -1548,7 +1594,7 @@ async def get_guardian(
     """Read-only: every brand check and its verdict. The polling endpoint."""
     service = _revision(principal, session, settings, llm, embeddings, storage)
     view = await service.guardian_state(_uuid(campaign_id, "Campaign"))
-    return await _guardian_view(view, campaign_id, principal, session)
+    return await _guardian_view(view, campaign_id, principal, session, link)
 
 
 @router.post("/{campaign_id}/guardian/start", response_model=GuardianView, status_code=202)
@@ -1559,6 +1605,7 @@ async def start_guardian(
     runner: GuardianRunnerDep,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -1591,7 +1638,7 @@ async def start_guardian(
             embeddings=embeddings,
             result_ids=claimed,
         )
-    return await _guardian_view(view, campaign_id, principal, session)
+    return await _guardian_view(view, campaign_id, principal, session, link)
 
 
 @router.post(
@@ -1604,6 +1651,7 @@ async def retry_guardian(
     runner: GuardianRunnerDep,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     llm: LLMDep,
     embeddings: EmbeddingsDep,
@@ -1625,7 +1673,7 @@ async def retry_guardian(
         result_ids=[claimed],
     )
     return await _guardian_view(
-        await service.guardian_state(campaign_uuid), campaign_id, principal, session
+        await service.guardian_state(campaign_uuid), campaign_id, principal, session, link
     )
 
 

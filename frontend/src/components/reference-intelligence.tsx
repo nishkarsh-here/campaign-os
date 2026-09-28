@@ -130,9 +130,9 @@ export function ReferenceGallery({
                     <p
                       className={`text-[10px] ${
                         reference.status === 'FAILED'
-                          ? 'text-red-400'
+                          ? 'text-danger'
                           : reference.status === 'COMPLETED'
-                            ? 'text-emerald-400'
+                            ? 'text-success'
                             : 'text-muted'
                       }`}
                     >
@@ -192,7 +192,7 @@ export function StyleDna({
       </div>
 
       {reference.status === 'FAILED' ? (
-        <div role="alert" className="mt-4 rounded-md border border-red-500/40 bg-red-500/5 p-3">
+        <div role="alert" className="mt-4 rounded-md border border-danger/40 bg-danger/5 p-3">
           <p className="text-xs">{reference.error ?? 'This reference could not be read.'}</p>
         </div>
       ) : !analysis ? (
@@ -357,7 +357,7 @@ export function CreativeContextPanel({ view }: { view: CreativeContextView }) {
       <div className="flex items-baseline justify-between">
         <h2 className="text-sm font-semibold">Creative Context</h2>
         <span
-          className={`text-[10px] ${view.ready ? 'text-emerald-400' : 'text-amber-400'}`}
+          className={`text-[10px] ${view.ready ? 'text-success' : 'text-warning'}`}
         >
           {view.ready ? 'Ready' : 'Incomplete'}
         </span>
@@ -398,7 +398,7 @@ export function CreativeContextPanel({ view }: { view: CreativeContextView }) {
 
       {/* Disagreement between references is information, not noise to average. */}
       {style.tensions.length ? (
-        <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+        <div className="mt-4 rounded-md border border-warning/40 bg-warning/5 p-3">
           <p className="text-xs font-medium">Your references disagree</p>
           <ul className="mt-1 space-y-0.5 text-xs text-muted">
             {style.tensions.map((tension) => (

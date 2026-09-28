@@ -38,7 +38,7 @@ function Chip({
   tone?: 'line' | 'warn';
   sentence?: boolean;
 }) {
-  const border = tone === 'warn' ? 'border-amber-500/50 text-amber-400' : 'border-line';
+  const border = tone === 'warn' ? 'border-warning/50 text-warning' : 'border-line';
   return (
     <span
       className={`rounded-full border ${border} px-2.5 py-1 text-xs ${
@@ -76,7 +76,7 @@ export function DiversityBadge({ verdict }: { verdict: DiversityVerdict }) {
   return (
     <div
       className={`rounded-md border p-3 text-xs ${
-        verdict.passed ? 'border-line' : 'border-amber-500/40 bg-amber-500/5'
+        verdict.passed ? 'border-line' : 'border-warning/40 bg-warning/5'
       }`}
     >
       <p className="font-medium">
@@ -99,236 +99,7 @@ export function DiversityBadge({ verdict }: { verdict: DiversityVerdict }) {
   );
 }
 
-function DirectionCard({
-  direction,
-  recommended,
-  selected,
-  busy,
-  onSelect,
-  onApprove,
-}: {
-  direction: CreativeDirection;
-  recommended: boolean;
-  selected: boolean;
-  busy: boolean;
-  onSelect: () => void;
-  onApprove: () => void;
-}) {
-  return (
-    <article
-      onClick={onSelect}
-      className={`flex cursor-pointer flex-col rounded-lg border p-5 transition ${
-        selected ? 'border-ink/40 bg-line/20' : 'border-line hover:bg-line/10'
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[10px] uppercase tracking-wide text-muted">
-            Direction {direction.ordinal}
-          </p>
-          <h3 className="mt-0.5 text-base font-semibold">{direction.title}</h3>
-        </div>
-        {recommended ? (
-          <span className="shrink-0 rounded-full border border-emerald-500/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
-            Recommended
-          </span>
-        ) : null}
-      </div>
 
-      <p className="mt-3 text-sm">{direction.big_idea}</p>
-
-      <dl className="mt-4 space-y-3 text-xs">
-        <div>
-          <dt className="text-[10px] uppercase tracking-wide text-muted">Why this works</dt>
-          <dd className="mt-0.5 text-muted">{direction.strategic_rationale}</dd>
-        </div>
-        <div>
-          <dt className="text-[10px] uppercase tracking-wide text-muted">Emotional angle</dt>
-          <dd className="mt-0.5">{direction.emotional_angle}</dd>
-        </div>
-        <div>
-          <dt className="text-[10px] uppercase tracking-wide text-muted">Visual summary</dt>
-          {/* The four choices distinctness is actually measured on. */}
-          <dd className="mt-0.5 text-muted">
-            {direction.subject} — {direction.environment}. {direction.composition},{' '}
-            {direction.lighting}.
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[10px] uppercase tracking-wide text-muted">Key message</dt>
-          <dd className="mt-0.5">{direction.key_message || direction.headline}</dd>
-        </div>
-      </dl>
-
-      <div className="mt-4 rounded-md border border-line/70 p-3">
-        <p className="text-[10px] uppercase tracking-wide text-muted">Copy</p>
-        <p className="mt-1 text-sm font-medium">{direction.headline}</p>
-        {direction.subhead ? <p className="mt-0.5 text-xs text-muted">{direction.subhead}</p> : null}
-        <p className="mt-1.5 text-xs">{direction.cta}</p>
-      </div>
-
-      {direction.style_families.length || direction.palette.length ? (
-        <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          {direction.style_families.map((style) => (
-            <Chip key={style}>{humanise(style)}</Chip>
-          ))}
-          <Swatches palette={direction.palette} />
-        </div>
-      ) : null}
-
-      {direction.reference_characteristics_avoided.length ? (
-        <div className="mt-4">
-          <p className="text-[10px] uppercase tracking-wide text-muted">
-            Deliberately not taken from your references
-          </p>
-          <ul className="mt-1 space-y-0.5 text-xs text-muted">
-            {direction.reference_characteristics_avoided.map((item) => (
-              <li key={item}>· {item}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      <button
-        type="button"
-        disabled={busy}
-        onClick={(event) => {
-          event.stopPropagation();
-          onApprove();
-        }}
-        className="mt-5 rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40 disabled:opacity-50"
-      >
-        {busy ? 'Working…' : 'Approve this direction'}
-      </button>
-    </article>
-  );
-}
-
-export function DirectionBoard({
-  set,
-  selectedId,
-  busy,
-  onSelect,
-  onApprove,
-  onReject,
-  onRequestChanges,
-}: {
-  set: CreativeDirectionSet;
-  selectedId: string | null;
-  busy: boolean;
-  onSelect: (id: string) => void;
-  onApprove: (id: string) => void;
-  onReject: (feedback: string) => void;
-  onRequestChanges: (feedback: string) => void;
-}) {
-  const [feedback, setFeedback] = useState('');
-  const [mode, setMode] = useState<'revise' | 'reject' | null>(null);
-
-  const recommended = set.recommended_ordinal;
-
-  return (
-    <section className="space-y-5">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold">Creative directions</h2>
-          <p className="mt-1 text-xs text-muted">
-            Three routes to the same campaign facts. Pick one — the plan is built from your
-            choice, not from an average of all three.
-          </p>
-        </div>
-        <span className="text-xs text-muted">
-          Version {set.version}
-          {set.revision_of_version ? ` · revised from v${set.revision_of_version}` : ''}
-        </span>
-      </div>
-
-      <DiversityBadge verdict={set.diversity} />
-
-      {set.recommendation_reasons.length ? (
-        <div className="rounded-md border border-line p-3">
-          <p className="text-[10px] uppercase tracking-wide text-muted">
-            Why direction {recommended} is recommended
-          </p>
-          <ul className="mt-1 space-y-0.5 text-xs text-muted">
-            {set.recommendation_reasons.map((reason) => (
-              <li key={reason}>· {reason}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        {set.directions.map((direction) => (
-          <DirectionCard
-            key={direction.id}
-            direction={direction}
-            recommended={direction.ordinal === recommended}
-            selected={direction.id === selectedId}
-            busy={busy}
-            onSelect={() => onSelect(direction.id)}
-            onApprove={() => onApprove(direction.id)}
-          />
-        ))}
-      </div>
-
-      <div className="rounded-lg border border-line p-5">
-        <p className="text-sm font-medium">None of these?</p>
-        <p className="mt-1 text-xs text-muted">
-          Tell us what is wrong. The campaign facts you confirmed — product, objective,
-          audience, message, CTA, channels and region — stay exactly as they are.
-        </p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setMode(mode === 'revise' ? null : 'revise')}
-            className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40"
-          >
-            Request changes
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode(mode === 'reject' ? null : 'reject')}
-            className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40"
-          >
-            Reject all three
-          </button>
-        </div>
-
-        {mode ? (
-          <div className="mt-4">
-            <label htmlFor="creative-feedback" className="text-xs text-muted">
-              {mode === 'revise'
-                ? 'What should change?'
-                : 'What missed? We will start a fresh set.'}
-            </label>
-            <textarea
-              id="creative-feedback"
-              rows={3}
-              value={feedback}
-              onChange={(event) => setFeedback(event.target.value)}
-              placeholder="e.g. Too corporate. Show the product being used, not a hero shot."
-              className="mt-1.5 w-full rounded-md border border-line bg-transparent p-2.5 text-sm"
-            />
-            <button
-              type="button"
-              disabled={busy || !feedback.trim()}
-              onClick={() => {
-                const text = feedback.trim();
-                if (mode === 'revise') onRequestChanges(text);
-                else onReject(text);
-                setFeedback('');
-                setMode(null);
-              }}
-              className="mt-2 rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40 disabled:opacity-50"
-            >
-              {busy ? 'Working…' : 'Send and regenerate'}
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
 
 /** One editable line of the plan. Read-only fields render the same, without a control. */
 type FieldKey = keyof CreativeSpecification;
@@ -370,7 +141,7 @@ function Field({
           {label}
         </label>
         {edited ? (
-          <span className="text-[10px] uppercase tracking-wide text-emerald-400">Yours</span>
+          <span className="text-[10px] uppercase tracking-wide text-success">Yours</span>
         ) : null}
       </div>
       {editable ? (
@@ -518,7 +289,7 @@ export function SpecificationPanel({
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
           {approved ? (
-            <span className="rounded-full border border-emerald-500/50 px-2.5 py-1 text-[10px] uppercase tracking-wide text-emerald-400">
+            <span className="rounded-full border border-success/50 px-2.5 py-1 text-[10px] uppercase tracking-wide text-success">
               Approved
             </span>
           ) : editing ? (
@@ -688,7 +459,7 @@ export function SpecificationPanel({
       </div>
 
       {approved ? (
-        <p className="mt-5 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs">
+        <p className="mt-5 rounded-md border border-success/40 bg-success/5 p-3 text-xs">
           Specification approved. Nothing has been generated — image generation is the next
           milestone, and it will start from exactly this plan.
         </p>

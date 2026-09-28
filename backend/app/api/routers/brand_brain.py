@@ -8,18 +8,22 @@ That is why every stage has a distinct terminal state — the UI reads it.
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
 from fastapi.responses import Response
 
 from app.api.deps import (
     EmbeddingsDep,
     LLMDep,
+    MediaLinkDep,
     PrincipalDep,
     SessionDep,
     SettingsDep,
     StorageDep,
+    media_access,
 )
+from app.api.media_links import MediaKind, MediaLink
 from app.api.schemas import (
     AssetList,
     BrandAssetSummary,
@@ -37,6 +41,7 @@ from app.api.schemas import (
 from app.db.models import BrandAssetRow, BrandDocumentRow, BrandFactRow, BrandProfileRow
 from app.db.session import get_sessionmaker
 from app.domain.brand import DocumentStatus, FactStatus, Provenance
+from app.domain.workspace import Principal
 from app.errors import NotFound, ValidationFailed
 from app.repositories.brands import BrandDocumentRepository
 from app.services.brand_documents import (
@@ -77,7 +82,7 @@ def _document_summary(row: BrandDocumentRow) -> BrandDocumentSummary:
     )
 
 
-def _asset_summary(row: BrandAssetRow) -> BrandAssetSummary:
+def _asset_summary(row: BrandAssetRow, link: MediaLink) -> BrandAssetSummary:
     return BrandAssetSummary(
         id=str(row.id),
         brand_id=str(row.brand_profile_id),
@@ -88,8 +93,9 @@ def _asset_summary(row: BrandAssetRow) -> BrandAssetSummary:
         width=row.width,
         height=row.height,
         # Served through the API so scope is checked on read; the browser never
-        # addresses storage directly.
-        url=f"/v1/brands/{row.brand_profile_id}/assets/{row.id}/content",
+        # addresses storage directly. Signed and short-lived, because an
+        # `<img src>` cannot carry the headers that normally prove that scope.
+        url=link.brand_asset(row.brand_profile_id, row.id),
     )
 
 
@@ -217,12 +223,14 @@ async def get_document(
 
 # ------------------------------------------------------------------------ assets
 @router.get("/assets", response_model=AssetList)
-async def list_assets(brand_id: str, principal: PrincipalDep, session: SessionDep) -> AssetList:
+async def list_assets(
+    brand_id: str, principal: PrincipalDep, link: MediaLinkDep, session: SessionDep
+) -> AssetList:
     brand = await _scoped_brand(principal, session, brand_id)
     from app.repositories.brands import BrandAssetRepository
 
     repo = BrandAssetRepository(session, uuid.UUID(principal.organization_id))
-    return AssetList(items=[_asset_summary(r) for r in await repo.list_for_brand(brand.id)])
+    return AssetList(items=[_asset_summary(r, link) for r in await repo.list_for_brand(brand.id)])
 
 
 @router.post("/assets", response_model=BrandAssetSummary, status_code=status.HTTP_201_CREATED)
@@ -230,6 +238,7 @@ async def upload_asset(
     brand_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
     file: UploadFile = File(...),
@@ -267,14 +276,14 @@ async def upload_asset(
         mime_type=upload.mime_type,
         size_bytes=upload.size_bytes,
     )
-    return _asset_summary(row)
+    return _asset_summary(row, link)
 
 
 @router.get("/assets/{asset_id}/content")
 async def get_asset_content(
     brand_id: str,
     asset_id: str,
-    principal: PrincipalDep,
+    principal: Annotated[Principal, Depends(media_access(MediaKind.BRAND_ASSET, "asset_id"))],
     session: SessionDep,
     storage: StorageDep,
 ) -> Response:
@@ -282,6 +291,9 @@ async def get_asset_content(
 
     The storage key is read from a scope-checked row — never from the request —
     so a key belonging to another organization cannot be requested at all.
+
+    The caller proves themselves with the usual headers or with a signed link
+    bound to this asset; a browser can send neither header on an `<img src>`.
     """
     from app.repositories.brands import BrandAssetRepository
 
@@ -360,7 +372,11 @@ async def decide_fact(
 # ------------------------------------------------------------------- brand brain
 @router.get("/brain", response_model=BrandBrainView)
 async def get_brand_brain(
-    brand_id: str, principal: PrincipalDep, session: SessionDep, embeddings: EmbeddingsDep
+    brand_id: str,
+    principal: PrincipalDep,
+    session: SessionDep,
+    link: MediaLinkDep,
+    embeddings: EmbeddingsDep,
 ) -> BrandBrainView:
     """Everything the Brand Brain page needs, in one call."""
     brand = await _scoped_brand(principal, session, brand_id)
@@ -371,7 +387,7 @@ async def get_brand_brain(
     return BrandBrainView(
         brand=composed.profile,
         documents=[_document_summary(d) for d in composed.documents],
-        assets=[_asset_summary(a) for a in composed.assets],
+        assets=[_asset_summary(a, link) for a in composed.assets],
         proposed_facts=[_fact_summary(f) for f in composed.proposed_facts],
         field_status=composed.field_status,
         chunk_count=composed.chunk_count,

@@ -62,6 +62,21 @@ class RunStatus(StrEnum):
 
 
 class CampaignStatus(StrEnum):
+    """Where a campaign has reached **in the LangGraph workflow**.
+
+    This lives in `CampaignState`, is checkpointed as JSON, and is the only
+    status a graph node ever sets. It spans the whole product arc, including
+    stages that are not graph stages at all — generation, evaluation and
+    revision left the graph in ADR-012 and ADR-013 — because the state object
+    is also what the interview reads to decide it is finished.
+
+    **It is not the `campaigns.status` column.** That column tracks a much
+    narrower thing, the discovery lifecycle of the row, and its vocabulary is
+    `CampaignRecordStatus` below. Writing a `CampaignStatus` into the column
+    is rejected by the database, which is the correct outcome and the reason
+    the two enums are now separate and separately named.
+    """
+
     DRAFT = "DRAFT"
     INTERVIEWING = "INTERVIEWING"
     STRATEGY = "STRATEGY"
@@ -70,6 +85,31 @@ class CampaignStatus(StrEnum):
     EVALUATING = "EVALUATING"
     REVISING = "REVISING"
     COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class CampaignRecordStatus(StrEnum):
+    """What the `campaigns.status` **column** may hold.
+
+    The row's own lifecycle, which is about one question: how far has the
+    discovery interview got, and has a human confirmed the result? Everything
+    after confirmation — directions, generation, evaluation, composition —
+    is tracked by its own table with its own status, so the campaign row has
+    nothing further to say and deliberately says nothing.
+
+    These are the exact values the `campaigns.status_valid` check constraint
+    accepts. The constraint is generated from this enum rather than written
+    out beside it, so the two cannot drift; `tests/test_domain_schemas.py`
+    asserts the database accepts every member.
+    """
+
+    DRAFT = "DRAFT"
+    INTERVIEWING = "INTERVIEWING"
+    #: The interview produced a Campaign Specification; nobody has agreed it.
+    SPECIFICATION_READY = "SPECIFICATION_READY"
+    #: A human confirmed it. This is the terminal happy state for the row.
+    SPECIFICATION_CONFIRMED = "SPECIFICATION_CONFIRMED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
@@ -86,6 +126,11 @@ class Channel(StrEnum):
     """Output channels. Each maps to a fixed aspect ratio in the layout engine."""
 
     INSTAGRAM_POST = "instagram_post"
+    #: Instagram feed portrait, 4:5. A distinct channel rather than a crop of
+    #: the square: it is the tallest frame the feed will show without cropping
+    #: and therefore the one most feed creative is actually built for, and it
+    #: needs its own safe area and type scale.
+    INSTAGRAM_PORTRAIT = "instagram_portrait"
     INSTAGRAM_STORY = "instagram_story"
     LINKEDIN = "linkedin"
     FACEBOOK = "facebook"
@@ -96,6 +141,7 @@ class Channel(StrEnum):
 
 CHANNEL_DIMENSIONS: dict[Channel, tuple[int, int]] = {
     Channel.INSTAGRAM_POST: (1080, 1080),
+    Channel.INSTAGRAM_PORTRAIT: (1080, 1350),  # 4:5
     Channel.INSTAGRAM_STORY: (1080, 1920),
     Channel.LINKEDIN: (1200, 627),
     Channel.FACEBOOK: (1200, 630),

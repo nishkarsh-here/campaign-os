@@ -93,7 +93,9 @@ class TestRenderAndExport:
         assert content.headers["content-type"] == "image/png"
         assert Image.open(io.BytesIO(content.content)).size == (asset["width"], asset["height"])
 
-        download = await client.get(f"{asset['url']}?download=true")
+        # `download_url`, not `url + "?download=true"`: `url` carries a signed
+        # query string, and appending another `?` folds the flag into the token.
+        download = await client.get(asset["download_url"])
         assert "attachment" in download.headers["content-disposition"]
         assert "instagram_post-v1.png" in download.headers["content-disposition"]
 

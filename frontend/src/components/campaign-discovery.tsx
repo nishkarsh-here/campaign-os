@@ -2,7 +2,8 @@
 
 /**
  * Campaign discovery: the conversation, the running picture of what we know,
- * and the Campaign Specification.
+ * and the Campaign Specification (shown to the reader simply as "the brief" —
+ * the schema name is implementation vocabulary and stays out of the UI).
  *
  * It should read like a consultant taking a brief — one question at a time,
  * with a visible reason for asking — rather than a chat window. The
@@ -30,13 +31,13 @@ const CERTAINTY_LABEL: Record<string, string> = {
 function CertaintyBadge({ assertion }: { assertion: FieldAssertion | undefined }) {
   if (!assertion) return null;
   if (assertion.edited_by_human) {
-    return <span className="text-[10px] text-emerald-400">edited by you</span>;
+    return <span className="text-[10px] text-success">edited by you</span>;
   }
   const tone =
     assertion.certainty === 'stated'
-      ? 'text-emerald-400'
+      ? 'text-success'
       : assertion.certainty === 'inferred'
-        ? 'text-amber-400'
+        ? 'text-warning'
         : 'text-muted';
   return (
     <span className={`text-[10px] ${tone}`}>
@@ -64,7 +65,7 @@ export function Conversation({
 
   return (
     <section className="rounded-lg border border-line p-5">
-      <h2 className="text-sm font-semibold">Discovery</h2>
+      <h3 className="text-h3">The conversation</h3>
       <p className="mt-1 text-xs text-muted">
         Describe the campaign in your own words. We&apos;ll ask only what we still need.
       </p>
@@ -86,7 +87,7 @@ export function Conversation({
           {/* A short, user-facing reason — never reasoning traces. */}
           <p className="mt-1 text-xs text-muted">{question.why}</p>
           {question.brand_default ? (
-            <p className="mt-2 text-xs text-amber-400">
+            <p className="mt-2 text-xs text-warning">
               Your brand says: {question.brand_default}
             </p>
           ) : null}
@@ -132,80 +133,15 @@ export function Conversation({
           </form>
         </div>
       ) : complete ? (
-        <p className="mt-6 text-sm text-emerald-400">
-          We have enough to draft the Campaign Specification.
+        <p className="mt-6 text-sm text-success">
+          We have enough to draft the brief.
         </p>
       ) : null}
     </section>
   );
 }
 
-const TRACKED: { field: string; label: string }[] = [
-  { field: 'campaign_objective', label: 'Objective' },
-  { field: 'product', label: 'Product' },
-  { field: 'target_audience', label: 'Audience' },
-  { field: 'key_message', label: 'Message' },
-  { field: 'channels', label: 'Channels' },
-  { field: 'cta', label: 'Call to action' },
-  { field: 'desired_emotional_response', label: 'Emotional response' },
-  { field: 'region', label: 'Region' },
-];
 
-export function CompletenessRail({
-  known,
-  missing,
-}: {
-  known: CampaignInputs;
-  missing: string[];
-}) {
-  const value = (field: string): string => {
-    const raw = (known as unknown as Record<string, unknown>)[field];
-    if (Array.isArray(raw)) return raw.join(', ');
-    return typeof raw === 'string' ? raw : '';
-  };
-  const answered = TRACKED.filter((t) => value(t.field)).length;
-
-  return (
-    <section className="rounded-lg border border-line p-5">
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold">What we know</h2>
-        <span className="text-xs text-muted">
-          {answered}/{TRACKED.length}
-        </span>
-      </div>
-      <div className="mt-3 h-1 w-full rounded bg-line">
-        <div
-          className="h-1 rounded bg-emerald-500/60 transition-all"
-          style={{ width: `${(answered / TRACKED.length) * 100}%` }}
-        />
-      </div>
-
-      <dl className="mt-4 space-y-3">
-        {TRACKED.map((tracked) => {
-          const text = value(tracked.field);
-          const assertion = known.assertions?.[tracked.field];
-          return (
-            <div key={tracked.field}>
-              <dt className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-muted">
-                {tracked.label}
-                <CertaintyBadge assertion={assertion} />
-              </dt>
-              <dd className="mt-0.5 text-xs">
-                {text ? (
-                  <span className="line-clamp-2">{text}</span>
-                ) : (
-                  <span className="text-muted">
-                    {missing.includes(tracked.field) ? 'still to discuss' : '—'}
-                  </span>
-                )}
-              </dd>
-            </div>
-          );
-        })}
-      </dl>
-    </section>
-  );
-}
 
 const SPEC_SECTIONS: { field: keyof CampaignSpecification; label: string; multiline?: boolean }[] = [
   { field: 'objective', label: 'Objective', multiline: true },
@@ -247,7 +183,7 @@ export function SpecificationPanel({
     <section className="rounded-lg border border-line p-5">
       <div className="flex items-baseline justify-between">
         <div>
-          <h2 className="text-sm font-semibold">Campaign Specification</h2>
+          <h3 className="text-h3">The brief</h3>
           <p className="mt-1 text-xs text-muted">
             The source of truth for everything that follows. Edit anything that isn&apos;t right.
           </p>
@@ -301,7 +237,7 @@ export function SpecificationPanel({
         </div>
 
         {specification.assumptions_made.length ? (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+          <div className="rounded-md border border-warning/40 bg-warning/5 p-3">
             <p className="text-xs font-medium">Proceeding on assumptions</p>
             <ul className="mt-1 space-y-0.5 text-xs text-muted">
               {specification.assumptions_made.map((a) => (
@@ -313,7 +249,7 @@ export function SpecificationPanel({
       </div>
 
       {confirmed ? (
-        <p className="mt-5 text-sm text-emerald-400">
+        <p className="mt-5 text-sm text-success">
           Confirmed. Creative work begins from this specification.
         </p>
       ) : (

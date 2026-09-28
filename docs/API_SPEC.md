@@ -172,6 +172,19 @@ Generation requires an **approved** Creative Specification. Without one,
 `start` is `409`. Retrying anything but a failed job is also `409` — re-running
 a success would pay twice for an image already in the gallery.
 
+Generation is **API-only** (ADR-015): the server calls a remote provider and
+receives bytes. No model runs on the application host. A completed plate
+carries its provenance — provider, model, provider request id, latency,
+requested aspect ratio and image size, requested and *returned* MIME type,
+and the reference-image count. The returned type is read from the bytes, so
+`image/png`, `image/jpeg` and `image/webp` are all handled and a row never
+claims a format its payload contradicts.
+
+A provider failure produces a normalized `FAILED` job with a user-safe
+`error_message` and a stable code — never a crashed workflow, and never a
+partial batch reported as a whole one. At most `IMAGE_MAX_RETRIES` extra
+attempts are made, and only for a timeout, a rate limit or a 5xx.
+
 Never returned: provider credentials, raw provider payloads, tracebacks, or a
 `ModelPrompt`'s `parameters` (provider-specific and opaque outside
 `app/providers/`). A failed job carries a user-safe `error_message` and a stable
@@ -179,7 +192,9 @@ Never returned: provider credentials, raw provider payloads, tracebacks, or a
 
 Asset bytes are served by the API, never by a storage URL: the key comes from a
 row already checked for organization *and* campaign, so an asset id from one
-campaign cannot be read through another campaign's URL.
+campaign cannot be read through another campaign's URL. The `url` field carries
+a short-lived signature — see **Media URLs** below — because an `<img src>`
+cannot send the scope headers.
 
 #### Evaluation and selection — implemented in Milestone 7
 
@@ -311,7 +326,7 @@ call here writes a **new version** — nothing is overwritten.
 | `POST` | `/v1/campaigns/{id}/composition/render` | `{channel, format}` -> `201` with the new `FinalAssetView`. Synchronous: deterministic Pillow work, no model call, nothing to poll |
 | `GET` | `/v1/campaigns/{id}/final-assets` | every render, newest first; `?channel=` to filter |
 | `GET` | `/v1/campaigns/{id}/final-assets/{asset_id}` | one asset with its full provenance |
-| `GET` | `/v1/campaigns/{id}/final-assets/{asset_id}/content` | the bytes; `?download=true` sends `Content-Disposition: attachment` |
+| `GET` | `/v1/campaigns/{id}/final-assets/{asset_id}/content` | the bytes. Use the view's `download_url` for the attachment variant — see **Media URLs** |
 
 **Formats.** `PNG` (default) and `JPEG`. Anything else is a `400`. PDF, print
 and A3/A4 production are deliberately out of scope — the print sizes exist in
@@ -346,6 +361,39 @@ Every byte-serving endpoint instead resolves a scope-checked row first and reads
 each have their own `/content` route under the resource that owns them.
 `LocalStorageProvider.signed_url` returns a `local://` reference that is
 deliberately not fetchable, so a caller that starts relying on it fails visibly.
+
+### Media URLs
+
+Organization scope is carried by the `X-Organization-Id` header and identity by
+`Authorization`. **A browser can send neither on an `<img src>`**, so every
+media `url` this API returns also carries a signature:
+
+```
+GET /v1/campaigns/{id}/assets/{asset_id}/content?token=<payload>.<signature>
+```
+
+The token names the resource kind, the row id, the organization, the user and an
+expiry, and is signed server-side (`MEDIA_URL_SECRET`, default lifetime 15
+minutes — see `.env.example`). It is minted by the already-authorized request
+that returned the view, so nothing extra is fetched to display an image.
+
+Rules for a client:
+
+- **Pass `url` through unchanged.** It has a query string; appending another
+  `?` folds your parameter into the token value and the link 404s. Where a
+  variant exists the API supplies it as its own field — `FinalAssetView` has
+  `download_url` for the `Content-Disposition: attachment` response.
+- **Do not store one.** It expires, and it is revoked the moment the user loses
+  membership of that organization. Re-read the view to get a fresh one.
+- **The headers still work.** A server-side client, a script or `curl` sends
+  `Authorization` and `X-Organization-Id` as before and needs no token.
+
+A token grants exactly one row, for a few minutes, to the organization it was
+minted in. It carries no storage key: the byte route still loads the row through
+the organization-scoped repository and reads the key from *it*. A token
+presented for the wrong row, the wrong route, the wrong organization, or after
+its expiry is a `404`, and so is a forged one — one answer for all of them,
+because distinguishing them would be an oracle for the secret.
 
 ## Status vocabulary
 

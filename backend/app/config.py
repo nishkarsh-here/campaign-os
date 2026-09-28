@@ -59,9 +59,24 @@ class Settings(BaseSettings):
 
     # --- credentials -------------------------------------------------------
     gemini_api_key: str | None = None
-    gemini_text_model: str = "gemini-2.5-pro"
-    gemini_image_model: str = "gemini-2.5-flash-image"
+    #: Reasoning model. Stable rather than a `-preview` or a `-latest` alias:
+    #: a plan that changes under you between two runs is not reproducible.
+    #: Multimodal, because reference analysis, evaluation and the Brand
+    #: Guardian all hand this model an image.
+    gemini_llm_model: str = "gemini-3.8-flash"
+    #: Image generation. Deliberately independent of the reasoning model —
+    #: they are different capabilities on different release cadences, and
+    #: coupling them means changing one silently changes the other.
+    #:
+    #: Nano Banana 2. `gemini-2.5-flash-image` is the legacy model and the
+    #: documentation now recommends transitioning off it.
+    gemini_image_model: str = "gemini-3.1-flash-image"
     gemini_embedding_model: str = "gemini-embedding-001"
+    #: Vector width asked of the embedding API, never trimmed afterwards.
+    #: Must equal `brand_chunks.embedding`'s declared width, which
+    #: `registry.assert_embedding_dimensions` checks at startup. The bounds
+    #: are the documented range for the Gemini embedding API.
+    gemini_embedding_dimensions: int = Field(default=1536, ge=128, le=3072)
     leonardo_api_key: str | None = None
     leonardo_model_id: str | None = None
     tavily_api_key: str | None = None
@@ -69,6 +84,12 @@ class Settings(BaseSettings):
     # --- storage -----------------------------------------------------------
     local_storage_dir: str = "./storage"
     supabase_url: str | None = None
+    #: The publishable (anon) key. Used only to identify the project when
+    #: verifying a user's own token against Supabase Auth — it carries no
+    #: privilege of its own, which is why auth does not use the service-role
+    #: key below. Safe to expose to a browser; Supabase intends it to be.
+    supabase_anon_key: str | None = None
+    #: Server-side only, and storage's alone. Never sent by the auth provider.
     supabase_service_role_key: str | None = None
     supabase_storage_bucket: str = "campaign-assets"
 
@@ -77,11 +98,35 @@ class Settings(BaseSettings):
     dev_stub_user_email: str = "demo@campaign-os.local"
     dev_stub_org_slug: str = "demo-org"
 
+    # --- media links ---------------------------------------------------------
+    #: Signing key for the short-lived links that serve bytes to a browser.
+    #:
+    #: A browser cannot put `Authorization` or `X-Organization-Id` on an
+    #: `<img src>`, so the API mints a signed, expiring, single-row link
+    #: instead (`app/api/media_links.py`). Unset means "generate one per
+    #: process": no configuration for the offline demo or the tests, and no
+    #: shipped default that would be identical on every install. Production
+    #: must set it — see the validator below — because two instances with two
+    #: ephemeral secrets reject each other's links.
+    media_url_secret: str | None = None
+    #: How long such a link lives. Long enough to render a page and for a
+    #: person to open an image in a new tab; short enough that a link which
+    #: leaks into a log or a referrer is worthless by the time anyone reads it.
+    media_url_ttl_s: int = Field(default=900, ge=30, le=86_400)
+
     # --- limits --------------------------------------------------------------
     max_upload_mb: int = Field(default=15, ge=1, le=100)
     allowed_upload_mime: str = "image/png,image/jpeg,image/webp,application/pdf"
     generation_timeout_s: int = 120
     llm_timeout_s: int = 60
+    #: Extra attempts after a *retryable* image failure — a timeout, a rate
+    #: limit or a 5xx. Never a refusal, a bad request or an unusable payload:
+    #: retrying those spends money to receive the same answer.
+    #:
+    #: One by default, and capped at three, because every attempt is billable.
+    #: This is the only retry in the image path; the router's per-provider
+    #: fallback is a separate, explicit user-visible action.
+    image_max_retries: int = Field(default=1, ge=0, le=3)
     #: Revision iterations. Distinct from the interview budget below, so a long
     #: interview cannot exhaust the ability to revise (ARCHITECTURE_REVIEW C-2).
     max_graph_iterations: int = Field(default=8, ge=1, le=50)
@@ -191,12 +236,47 @@ class Settings(BaseSettings):
             missing.append("LEONARDO_API_KEY (IMAGE_PROVIDER=leonardo)")
         if self.embedding_provider == "gemini" and not self.gemini_api_key:
             missing.append("GEMINI_API_KEY (EMBEDDING_PROVIDER=gemini)")
+        # A blank model id reaches the provider as a request for nothing and
+        # comes back as an opaque 400 mid-campaign. It is configuration, so it
+        # is caught with the rest of the configuration. Whether the id names a
+        # model that exists can only be answered by the provider — that is
+        # what `scripts/gemini_*_smoke_test.py` are for.
+        for selected, provider, model, name in (
+            (self.llm_provider, "LLM_PROVIDER", self.gemini_llm_model, "GEMINI_LLM_MODEL"),
+            (
+                self.image_provider,
+                "IMAGE_PROVIDER",
+                self.gemini_image_model,
+                "GEMINI_IMAGE_MODEL",
+            ),
+            (
+                self.embedding_provider,
+                "EMBEDDING_PROVIDER",
+                self.gemini_embedding_model,
+                "GEMINI_EMBEDDING_MODEL",
+            ),
+        ):
+            if selected == "gemini" and not model.strip():
+                missing.append(f"{name} ({provider}=gemini)")
         if self.search_provider == "tavily" and not self.tavily_api_key:
             missing.append("TAVILY_API_KEY (SEARCH_PROVIDER=tavily)")
         if self.storage_provider == "supabase" and not (
             self.supabase_url and self.supabase_service_role_key
         ):
             missing.append("SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (STORAGE_PROVIDER=supabase)")
+        # Auth needs the project URL and the publishable key, and deliberately
+        # not the service-role key: a standing escalation for a request that
+        # already carries the caller's own token would be privilege for
+        # nothing. Checked here so a missing key is a boot failure rather than
+        # a 401 that looks to the user like a bad password.
+        if self.auth_provider == "supabase" and not (self.supabase_url and self.supabase_anon_key):
+            missing.append("SUPABASE_URL + SUPABASE_ANON_KEY (AUTH_PROVIDER=supabase)")
+        # A per-process signing key works for one instance and silently fails
+        # for two: a link minted by one is a bad signature at the other, which
+        # presents as images that load on refresh and not before. Configuration
+        # mistakes belong at startup, not in an intermittent bug report.
+        if self.app_env is AppEnv.PRODUCTION and not self.media_url_secret:
+            missing.append("MEDIA_URL_SECRET (APP_ENV=production)")
         if missing:
             raise ValueError("Missing configuration: " + "; ".join(missing))
 

@@ -54,9 +54,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # A provider whose vector width disagrees with the column is a
     # configuration error; catch it here rather than at the first retrieval.
-    from app.providers.registry import assert_embedding_dimensions, build_embedding_provider
+    from app.providers.registry import (
+        assert_embedding_dimensions,
+        build_embedding_provider,
+        build_llm_provider,
+    )
 
     assert_embedding_dimensions(build_embedding_provider(settings))
+    # Constructing the reasoning provider proves the selected name has an
+    # adapter behind it. A name with no module raises ImportError here, at
+    # boot, rather than three minutes into an interview.
+    build_llm_provider(settings)
 
     # The dev stub asserts an identity but provisions nothing. Give that
     # identity a workspace here, once, so the request path stays identical in

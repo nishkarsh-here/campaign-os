@@ -43,6 +43,14 @@ def _plate(width: int = 1200, height: int = 1200, colour=(40, 60, 80)) -> bytes:
     return buffer.getvalue()
 
 
+def _jpeg_plate(width: int = 1200, height: int = 1200, colour=(40, 60, 80)) -> bytes:
+    """A plate in the format Gemini actually returns. The image model will
+    only produce JPEG; PNG stays the format of deterministic rendering."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), colour).save(buffer, format="JPEG", quality=95)
+    return buffer.getvalue()
+
+
 def _logo(width: int = 240, height: int = 80) -> bytes:
     buffer = io.BytesIO()
     Image.new("RGBA", (width, height), (255, 255, 255, 255)).save(buffer, format="PNG")
@@ -290,6 +298,92 @@ class TestRendering:
         assert result.mime_type == "image/jpeg"
         with Image.open(io.BytesIO(result.data)) as image:
             assert image.format == "JPEG"
+
+    def test_a_jpeg_plate_composes(self) -> None:
+        """M9 compatibility. The plate arrives as JPEG from Gemini; the
+        composition is still PNG, because the layer code draws is lossless
+        and re-encoding it every edit would compound (ADR-014)."""
+        result = render(_layout(), RenderInputs(plate=_jpeg_plate(), logo=_logo()))
+
+        assert result.mime_type == "image/png"
+        assert (result.width, result.height) == CHANNEL_DIMENSIONS[Channel.INSTAGRAM_POST]
+        with Image.open(io.BytesIO(result.data)) as image:
+            assert image.format == "PNG"
+            assert image.size == (result.width, result.height)
+
+    def test_a_jpeg_plate_renders_deterministically(self) -> None:
+        """The plate's format must not cost the guarantee everything rests on."""
+        layout = _layout()
+        inputs = RenderInputs(plate=_jpeg_plate(), logo=_logo())
+        assert render(layout, inputs).data == render(layout, inputs).data
+
+    def test_a_jpeg_plate_reaches_the_canvas(self) -> None:
+        """Not just 'it did not crash': the plate's own colour must be on it."""
+        logo = _logo()
+        red = render(_layout(), RenderInputs(plate=_jpeg_plate(colour=(200, 30, 40)), logo=logo))
+        blue = render(_layout(), RenderInputs(plate=_jpeg_plate(colour=(30, 40, 200)), logo=logo))
+        assert red.data != blue.data
+
+    def test_every_channel_renders_from_a_jpeg_plate(self) -> None:
+        inputs = RenderInputs(plate=_jpeg_plate(), logo=_logo())
+        for channel in Channel:
+            result = render(_layout(channel), inputs)
+            assert (result.width, result.height) == CHANNEL_DIMENSIONS[channel]
+
+    def test_the_instagram_portrait_channel_is_first_class(self) -> None:
+        """4:5 is the Instagram feed's tallest uncropped frame and therefore
+        the one most feed creative is built for. It is its own channel, not a
+        crop of the square — so it needs its own dimensions, safe area and
+        type scale, and this asserts all three arrive."""
+        channel = Channel.INSTAGRAM_PORTRAIT
+        width, height = CHANNEL_DIMENSIONS[channel]
+        assert (width, height) == (1080, 1350)
+        assert width / height == pytest.approx(4 / 5)
+
+        # Its own safe area, not the square's.
+        assert channel in SAFE_AREAS
+        assert SAFE_AREAS[channel] != SAFE_AREAS[Channel.INSTAGRAM_POST]
+
+        result = render(_layout(channel), RenderInputs(plate=_plate(), logo=_logo()))
+        assert (result.width, result.height) == (1080, 1350)
+        with Image.open(io.BytesIO(result.data)) as image:
+            assert image.size == (1080, 1350)
+
+    def test_the_portrait_layout_reports_no_issues(self) -> None:
+        """The default layout for a new channel has to be valid, or every
+        composition on it opens with a warning panel."""
+        layout = _layout(Channel.INSTAGRAM_PORTRAIT)
+        report = validate_layout(layout)
+        assert report.issues == [], [i.message for i in report.issues]
+        assert report.can_render()
+
+    def test_the_portrait_type_is_sized_for_its_own_canvas(self) -> None:
+        """A fraction of a taller canvas is a different number of pixels.
+        Square and portrait should land at a comparable physical size in the
+        same feed rather than at a comparable fraction."""
+        square = _layout(Channel.INSTAGRAM_POST).by_role("headline")
+        portrait = _layout(Channel.INSTAGRAM_PORTRAIT).by_role("headline")
+        assert square is not None and portrait is not None
+        assert square.text_style is not None and portrait.text_style is not None
+
+        # `size` is a fraction of canvas height, so compare absolute pixels.
+        square_px = square.text_style.size * CHANNEL_DIMENSIONS[Channel.INSTAGRAM_POST][1]
+        portrait_px = portrait.text_style.size * CHANNEL_DIMENSIONS[Channel.INSTAGRAM_PORTRAIT][1]
+        assert portrait_px == pytest.approx(square_px, rel=0.20)
+        assert portrait.text_style.size != square.text_style.size, (
+            "the portrait channel must have its own type scale, not the square's"
+        )
+
+    def test_the_existing_channels_are_untouched(self) -> None:
+        """Adding a channel must not move any other channel's geometry."""
+        assert CHANNEL_DIMENSIONS[Channel.INSTAGRAM_POST] == (1080, 1080)
+        assert CHANNEL_DIMENSIONS[Channel.INSTAGRAM_STORY] == (1080, 1920)
+        assert CHANNEL_DIMENSIONS[Channel.LINKEDIN] == (1200, 627)
+        assert CHANNEL_DIMENSIONS[Channel.FACEBOOK] == (1200, 630)
+        assert CHANNEL_DIMENSIONS[Channel.WEB_BANNER] == (1456, 816)
+        assert SAFE_AREAS[Channel.INSTAGRAM_POST] == SafeArea(
+            top=0.06, right=0.06, bottom=0.06, left=0.06
+        )
 
     def test_every_channel_renders(self) -> None:
         inputs = self._inputs()

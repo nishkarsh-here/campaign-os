@@ -17,9 +17,10 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Annotated
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Header, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.media_links import InvalidMediaToken, MediaKind, MediaLink, verify
 from app.auth.base import AuthenticationError, AuthProvider
 from app.auth.registry import get_auth_provider
 from app.config import Settings, get_settings
@@ -107,6 +108,81 @@ async def get_principal(
 
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
+
+
+# ---------------------------------------------------------------------------
+# Media. The one place a caller may prove themselves without headers.
+# ---------------------------------------------------------------------------
+def media_access(kind: MediaKind, id_path_param: str) -> Callable[..., Awaitable[Principal]]:
+    """A `Principal` for a byte-serving route, from headers *or* a signed link.
+
+    A browser cannot put `Authorization` or `X-Organization-Id` on an
+    `<img src>`, so the two headers cannot be the only way to prove a media
+    read. `?token=…` is the second way: a short-lived signature over exactly
+    one row, minted earlier by a request that was already authorized to read it
+    (`app/api/media_links.py`).
+
+    What the token replaces is the *transport* of identity and organization,
+    and nothing else:
+
+    * the resource kind and the row id in the path are checked against the
+      token here, so a link cannot be replayed against another row or another
+      route — the route cannot forget to check, because the check is the
+      dependency;
+    * **membership is re-read from the database on every request**, so a token
+      minted before someone left an organization stops working the moment they
+      leave rather than when it expires;
+    * the route then resolves the row through the same organization-scoped
+      repository as before and reads the storage key from *it*. No key, path or
+      filename is ever taken from the request.
+
+    Headers still work. An API client, a test and `curl` are unaffected, and
+    are the only callers that reach the `else` branch below.
+    """
+
+    async def dependency(
+        request: Request,
+        session: SessionDep,
+        auth: AuthDep,
+        settings: SettingsDep,
+        token: Annotated[str | None, Query()] = None,
+        x_organization_id: Annotated[str | None, Header(alias=ORGANIZATION_HEADER)] = None,
+    ) -> Principal:
+        if token is None:
+            # The ordinary path, byte-for-byte what every other route does.
+            user = await get_current_user(request, session, auth)
+            return await get_principal(session, user, x_organization_id)
+
+        row_id = str(request.path_params.get(id_path_param, ""))
+        try:
+            grant = verify(token, kind=kind, row_id=row_id, settings=settings)
+        except InvalidMediaToken as exc:
+            # One answer for forged, expired, malformed and misdirected. A
+            # reply that distinguished them would be an oracle for the secret,
+            # and "this link no longer works" is the whole of what a holder
+            # needs to know.
+            raise NotFound("Not found.", detail=str(exc)) from exc
+
+        user_row = await UserRepository(session).get(uuid.UUID(grant.user_id))
+        if user_row is None:
+            raise NotFound("Not found.")
+        organization_id = uuid.UUID(grant.organization_id)
+        role = await MembershipRepository(session).role_in(user_row.id, organization_id)
+        if role is None:
+            # Membership is authority, not history. Revoked means revoked now.
+            raise NotFound("Not found.")
+        user = User(id=str(user_row.id), email=user_row.email, display_name=user_row.display_name)
+        return Principal(user=user, organization_id=str(organization_id), role=Role(role))
+
+    return dependency
+
+
+def get_media_link(principal: PrincipalDep, settings: SettingsDep) -> MediaLink:
+    """Mints links for this request's caller and organization, and no other."""
+    return MediaLink(principal, settings)
+
+
+MediaLinkDep = Annotated[MediaLink, Depends(get_media_link)]
 
 
 # ---------------------------------------------------------------------------

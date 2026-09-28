@@ -60,7 +60,7 @@ export function LayoutHealth({ report }: { report: LayoutReportView | null }) {
 
   if (report.verdict === 'PASS' && warnings.length === 0) {
     return (
-      <p className="text-xs text-emerald-400">
+      <p className="text-xs text-success">
         ✓ Layout checks pass — every element is inside the canvas and clear of the safe area.
       </p>
     );
@@ -69,7 +69,7 @@ export function LayoutHealth({ report }: { report: LayoutReportView | null }) {
   return (
     <div
       className={`rounded-md border p-3 ${
-        blocking.length ? 'border-red-500/50 bg-red-500/5' : 'border-amber-500/50 bg-amber-500/5'
+        blocking.length ? 'border-danger/50 bg-danger/5' : 'border-warning/50 bg-warning/5'
       }`}
     >
       <p className="text-sm font-medium">
@@ -80,7 +80,7 @@ export function LayoutHealth({ report }: { report: LayoutReportView | null }) {
       <ul className="mt-2 space-y-1.5">
         {[...blocking, ...warnings].map((issue, index) => (
           <li key={`${issue.element_id ?? 'canvas'}-${index}`} className="text-xs">
-            <span className={issue.severity === 'blocking' ? 'text-red-400' : 'text-amber-400'}>
+            <span className={issue.severity === 'blocking' ? 'text-danger' : 'text-warning'}>
               {issue.severity === 'blocking' ? '✕' : '⚠'}
             </span>{' '}
             <span>{issue.detail}</span>
@@ -458,7 +458,9 @@ export function ExportHistory({ view }: { view: CompositionView }) {
             <span className="text-muted">spec v{asset.specification_version}</span>
             <span className="text-muted">{new Date(asset.created_at).toLocaleString()}</span>
             <a
-              href={`${mediaUrl(asset.url)}?download=true`}
+              // `download_url`, never `url + '?download=true'`: `url` carries a
+              // signature in its query string and a second `?` breaks it.
+              href={mediaUrl(asset.download_url)}
               className="ml-auto rounded-md border border-line px-2 py-0.5 hover:bg-line/40"
             >
               Download

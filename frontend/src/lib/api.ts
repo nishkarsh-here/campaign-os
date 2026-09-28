@@ -7,7 +7,32 @@
  * and the API surface swappable.
  */
 
+import { authorizationToken, clearSession } from '@/lib/session';
+
 const API_BASE_URL = process.env.API_BASE_URL ?? 'http://127.0.0.1:8000';
+
+/**
+ * Attach the caller's session, if there is one.
+ *
+ * Absent is normal rather than exceptional: with `AUTH_PROVIDER=dev_stub` the
+ * backend ignores the credential entirely, so the offline demo sends no header
+ * and works exactly as it did before authentication existed.
+ */
+async function withAuthorization(headers: Record<string, string>): Promise<Record<string, string>> {
+  const token = await authorizationToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
+/**
+ * A rejected credential means the stored session is dead, whatever the browser
+ * still has in `localStorage`. Discarding it here — at the one place every
+ * response passes through — is what stops the app from retrying a token the
+ * server has already refused.
+ */
+function forgetSessionIfRejected(code: string): void {
+  if (code === 'UNAUTHENTICATED') clearSession();
+}
 
 export type ErrorCode =
   | 'VALIDATION_FAILED'
@@ -28,6 +53,12 @@ export type ErrorCode =
  * backend must not hardcode its own public host. But an `<img src>` resolves a
  * relative path against the *page* origin, which is the Next server, not the
  * API. Every media reference goes through here.
+ *
+ * **The path already carries a short-lived signature.** An `<img src>` cannot
+ * send `Authorization` or `X-Organization-Id`, so the API signs each media
+ * path for one row and a few minutes instead. Pass it through untouched: it
+ * has a query string, so appending `?anything=…` corrupts the token. Where a
+ * variant is needed the API supplies its own field, as `download_url` does.
  */
 export function mediaUrl(path: string): string {
   return path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
@@ -70,6 +101,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   // Which organization this request acts in. The server still verifies
   // membership — this only disambiguates.
   if (organizationId) headers['X-Organization-Id'] = organizationId;
+  await withAuthorization(headers);
 
   let response: Response;
   try {
@@ -96,6 +128,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   if (!response.ok) {
     const envelope = payload as ErrorEnvelope | null;
     const error = envelope?.error;
+    forgetSessionIfRejected(error?.code ?? '');
     throw new ApiError(
       error?.code ?? 'INTERNAL',
       error?.message ?? `Request failed with status ${response.status}.`,
@@ -911,6 +944,7 @@ export interface EditFieldChange {
  */
 export type Channel =
   | 'instagram_post'
+  | 'instagram_portrait'
   | 'instagram_story'
   | 'linkedin'
   | 'facebook'
@@ -921,6 +955,7 @@ export type Channel =
 /** How a channel is written for a person. */
 export const CHANNEL_LABELS: Record<Channel, string> = {
   instagram_post: 'Instagram post',
+  instagram_portrait: 'Instagram portrait',
   instagram_story: 'Instagram story',
   linkedin: 'LinkedIn',
   facebook: 'Facebook',
@@ -1021,6 +1056,14 @@ export interface FinalAssetView {
   mime_type: string;
   size_bytes: number | null;
   url: string;
+  /**
+   * The same bytes as a file attachment.
+   *
+   * A separate field rather than `url + '?download=true'`: `url` carries a
+   * short-lived signature in its query string, so appending another `?` folds
+   * the flag into the token value and the link 404s. The server builds both.
+   */
+  download_url: string;
   source_asset_id: string | null;
   specification_version: number;
   layout_version: number;
@@ -1118,6 +1161,7 @@ export async function apiUpload<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (organizationId) headers['X-Organization-Id'] = organizationId;
+  await withAuthorization(headers);
 
   let response: Response;
   try {
@@ -1137,6 +1181,7 @@ export async function apiUpload<T>(
   const payload: unknown = text ? JSON.parse(text) : null;
   if (!response.ok) {
     const error = (payload as ErrorEnvelope | null)?.error;
+    forgetSessionIfRejected(error?.code ?? '');
     throw new ApiError(
       error?.code ?? 'INTERNAL',
       error?.message ?? `Upload failed with status ${response.status}.`,

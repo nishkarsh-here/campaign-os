@@ -62,7 +62,14 @@ class ProviderError(Exception):
 
     code = "PROVIDER_ERROR"
 
-    def __init__(self, message: str, *, detail: str | None = None, provider: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        detail: str | None = None,
+        provider: str = "",
+        retryable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.message = message
         # Redacted here rather than at each call site: this is the one place
@@ -70,6 +77,14 @@ class ProviderError(Exception):
         # the guarantee can actually be made.
         self.detail = redact_secrets(detail) if detail else detail  # log-side only
         self.provider = provider
+        #: Could trying again plausibly give a different answer?
+        #:
+        #: A property of the *failure*, not of its class: a 429 and a 503 are
+        #: both worth repeating, while a 401 is a `ProviderUnavailable` that
+        #: never will be. Defaults to False so a retry has to be argued for —
+        #: every image attempt is billable, and the expensive mistake is
+        #: retrying something that was never going to succeed.
+        self.retryable = retryable
 
 
 class ProviderTimeout(ProviderError):

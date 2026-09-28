@@ -17,11 +17,20 @@ Two shapes worth knowing before reading:
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import Response
 
-from app.api.deps import PrincipalDep, SessionDep, SettingsDep, StorageDep
+from app.api.deps import (
+    MediaLinkDep,
+    PrincipalDep,
+    SessionDep,
+    SettingsDep,
+    StorageDep,
+    media_access,
+)
+from app.api.media_links import MediaKind, MediaLink
 from app.api.schemas import (
     ComposeRequest,
     CompositionView,
@@ -34,6 +43,7 @@ from app.api.schemas import (
 from app.db.models import FinalAssetRow
 from app.domain.common import Channel
 from app.domain.layout import FinalAssetKind
+from app.domain.workspace import Principal
 from app.errors import NotFound
 from app.services.composition_stage import (
     COMPOSABLE_CHANNELS,
@@ -65,7 +75,7 @@ def _service(
     return CompositionService(session, principal, settings=settings, storage=storage)
 
 
-def final_asset_view(row: FinalAssetRow) -> FinalAssetView:
+def final_asset_view(row: FinalAssetRow, link: MediaLink) -> FinalAssetView:
     """Shared with the campaign overview, so the two cannot describe the same
     row differently."""
     return FinalAssetView(
@@ -78,7 +88,10 @@ def final_asset_view(row: FinalAssetRow) -> FinalAssetView:
         height=row.height,
         mime_type=row.mime_type,
         size_bytes=row.bytes,
-        url=f"/v1/campaigns/{row.campaign_id}/final-assets/{row.id}/content",
+        # Signed and short-lived: the download link and the preview are both
+        # fetched by the browser, which cannot send the scope headers.
+        url=link.final_asset(row.campaign_id, row.id),
+        download_url=link.final_asset(row.campaign_id, row.id, download=True),
         source_asset_id=str(row.source_asset_id) if row.source_asset_id else None,
         specification_version=row.specification_version,
         layout_version=row.layout_version,
@@ -87,14 +100,14 @@ def final_asset_view(row: FinalAssetRow) -> FinalAssetView:
     )
 
 
-def _view(view: ServiceCompositionView) -> CompositionView:
+def _view(view: ServiceCompositionView, link: MediaLink) -> CompositionView:
     composed = [Channel(value) for value in view.composed_channels]
     return CompositionView(
         campaign_id=view.campaign_id,
         channel=view.channel,
         layout=view.layout,
         report=view.report,
-        final_assets=[final_asset_view(row) for row in view.final_assets],
+        final_assets=[final_asset_view(row, link) for row in view.final_assets],
         composed_channels=composed,
         available_channels=[c for c in COMPOSABLE_CHANNELS if c not in composed],
         can_compose=view.can_compose,
@@ -108,6 +121,7 @@ async def get_composition(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
     channel: Channel = DEFAULT_CHANNEL,
@@ -115,7 +129,7 @@ async def get_composition(
     """The current layout for a channel, its geometry report, and every final
     asset the campaign has rendered so far."""
     service = _service(principal, session, settings, storage)
-    return _view(await service.current(_uuid(campaign_id, "Campaign"), channel=channel))
+    return _view(await service.current(_uuid(campaign_id, "Campaign"), channel=channel), link)
 
 
 # ------------------------------------------------------------------ composing
@@ -129,6 +143,7 @@ async def compose(
     body: ComposeRequest,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
 ) -> CompositionView:
@@ -141,7 +156,7 @@ async def compose(
     service = _service(principal, session, settings, storage)
     view = await service.compose(_uuid(campaign_id, "Campaign"), channel=body.channel)
     await session.commit()
-    return _view(view)
+    return _view(view, link)
 
 
 @router.post(
@@ -154,6 +169,7 @@ async def add_variant(
     body: VariantRequest,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
 ) -> CompositionView:
@@ -167,7 +183,7 @@ async def add_variant(
         _uuid(campaign_id, "Campaign"), channel=body.channel, source=body.source
     )
     await session.commit()
-    return _view(view)
+    return _view(view, link)
 
 
 # -------------------------------------------------------------------- editing
@@ -177,6 +193,7 @@ async def edit_composition(
     body: LayoutEditRequest,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
     channel: Channel = DEFAULT_CHANNEL,
@@ -196,7 +213,7 @@ async def edit_composition(
         edits["background_color"] = body.background_color
     view = await service.edit(_uuid(campaign_id, "Campaign"), channel=channel, edits=edits)
     await session.commit()
-    return _view(view)
+    return _view(view, link)
 
 
 # ------------------------------------------------------------------ rendering
@@ -210,6 +227,7 @@ async def render_composition(
     body: RenderRequest,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
 ) -> FinalAssetView:
@@ -223,7 +241,7 @@ async def render_composition(
     row = await service.render_final(
         _uuid(campaign_id, "Campaign"), channel=body.channel, fmt=body.format
     )
-    view = final_asset_view(row)
+    view = final_asset_view(row, link)
     await session.commit()
     return view
 
@@ -234,6 +252,7 @@ async def list_final_assets(
     campaign_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
     channel: Channel | None = None,
@@ -242,7 +261,7 @@ async def list_final_assets(
     history is the point."""
     service = _service(principal, session, settings, storage)
     rows = await service.final_assets(_uuid(campaign_id, "Campaign"), channel=channel)
-    return FinalAssetList(items=[final_asset_view(row) for row in rows], total=len(rows))
+    return FinalAssetList(items=[final_asset_view(row, link) for row in rows], total=len(rows))
 
 
 @router.get("/{campaign_id}/final-assets/{asset_id}", response_model=FinalAssetView)
@@ -251,19 +270,20 @@ async def get_final_asset(
     asset_id: str,
     principal: PrincipalDep,
     session: SessionDep,
+    link: MediaLinkDep,
     settings: SettingsDep,
     storage: StorageDep,
 ) -> FinalAssetView:
     service = _service(principal, session, settings, storage)
     row = await service.scoped_final(_uuid(campaign_id, "Campaign"), _uuid(asset_id, "Final asset"))
-    return final_asset_view(row)
+    return final_asset_view(row, link)
 
 
 @router.get("/{campaign_id}/final-assets/{asset_id}/content")
 async def get_final_asset_content(
     campaign_id: str,
     asset_id: str,
-    principal: PrincipalDep,
+    principal: Annotated[Principal, Depends(media_access(MediaKind.FINAL_ASSET, "asset_id"))],
     session: SessionDep,
     settings: SettingsDep,
     storage: StorageDep,

@@ -11,9 +11,11 @@ modes, so the FAILED and partial-success paths are real rather than simulated.
 
 from __future__ import annotations
 
+import io
 import uuid
 
 import pytest
+from PIL import Image
 
 from app.config import Settings, get_settings
 from app.db.models import BrandProfileRow, CampaignRow, CreativeSpecificationRow
@@ -22,6 +24,7 @@ from app.domain.creative import CreativeSpecification, NegativeConstraints
 from app.domain.generation import AssetKind
 from app.domain.workspace import Principal, User
 from app.errors import Conflict, NotFound
+from app.providers.base import GeneratedImage
 from app.providers.local.storage import LocalStorageProvider
 from app.providers.mock.embedding import MockEmbeddingProvider
 from app.providers.mock.llm import MockLLMProvider
@@ -133,6 +136,28 @@ def _service(session, workspace, storage, **settings_overrides) -> GenerationSer
     )
 
 
+class _JpegImageProvider:
+    """Stands in for Gemini, which only ever returns JPEG. Deliberately not
+    the mock provider: the mock renders PNG, so it cannot prove that the
+    persistence path carries the provider's own format through."""
+
+    name = "gemini"
+    supported_aspect_ratios: tuple[str, ...] = ("1:1",)
+
+    async def generate(self, request) -> list[GeneratedImage]:
+        buffer = io.BytesIO()
+        Image.new("RGB", (320, 320), (40, 60, 80)).save(buffer, format="JPEG")
+        data = buffer.getvalue()
+        return [
+            GeneratedImage(
+                data=data, mime_type="image/jpeg", width=320, height=320, seed=request.seed
+            )
+        ]
+
+    async def health(self) -> bool:
+        return True
+
+
 @pytest.fixture
 def storage(tmp_path) -> LocalStorageProvider:
     return LocalStorageProvider(str(tmp_path))
@@ -227,6 +252,36 @@ class TestGenerationJobs:
         assert asset.specification_version == 2
         # The bytes are really there.
         assert await storage.get(asset.storage_key)
+
+    async def test_a_jpeg_plate_is_persisted_as_jpeg(
+        self, session, workspace, storage, monkeypatch
+    ) -> None:
+        """The Gemini path end to end, without Gemini. The mime type the
+        provider reports must reach the storage key, the stored object and the
+        asset row — nothing along the way may assume PNG."""
+        campaign = await _campaign_with_approved_specification(session, workspace.org)
+
+        def _jpeg_provider(settings, name=None):
+            return _JpegImageProvider()
+
+        monkeypatch.setattr("app.services.generation.build_image_provider", _jpeg_provider)
+
+        service = _service(session, workspace, storage)
+        view, _ = await service.start(campaign.id)
+        await service.run_jobs([uuid.UUID(job.id) for job in view.batch.jobs])
+
+        after = await service.current(campaign.id)
+        (asset,) = after.batch.assets
+        assert asset.mime_type == "image/jpeg"
+        assert asset.storage_key.endswith(".jpg")
+        assert asset.kind is AssetKind.VISUAL_PLATE
+        assert (asset.width, asset.height) == (320, 320)
+
+        # The bytes really are a JPEG, and really are readable back out.
+        stored = await storage.get(asset.storage_key)
+        assert stored.startswith(b"\xff\xd8\xff")
+        with Image.open(io.BytesIO(stored)) as image:
+            assert image.format == "JPEG"
 
     async def test_a_failing_provider_fails_its_job_with_a_readable_reason(
         self, session, workspace, storage
@@ -395,6 +450,17 @@ class TestStorageKeys:
             "mime_type": "image/png",
         }
         assert generated_asset_key(**args) != generated_asset_key(**args)
+
+    def test_a_jpeg_plate_gets_a_jpg_extension(self) -> None:
+        """Gemini returns JPEG and nothing else. A key ending `.png` over
+        JPEG bytes misleads every tool that trusts an extension."""
+        key = generated_asset_key(
+            organization_id=uuid.uuid4(),
+            campaign_id=uuid.uuid4(),
+            job_id=uuid.uuid4(),
+            mime_type="image/jpeg",
+        )
+        assert key.endswith(".jpg")
 
     def test_an_unknown_mime_type_does_not_produce_a_strange_extension(self) -> None:
         key = generated_asset_key(

@@ -8,13 +8,12 @@
  */
 
 import { use, useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
+import { Conversation, SpecificationPanel } from '@/components/campaign-discovery';
 import {
-  CompletenessRail,
-  Conversation,
-  SpecificationPanel,
-} from '@/components/campaign-discovery';
+  CampaignSnapshot,
+  fromInputs,
+  fromSpecification,
+} from '@/components/campaign-snapshot';
 import { ErrorState, SkeletonRows } from '@/components/states';
 import {
   ApiError,
@@ -23,12 +22,11 @@ import {
   type CampaignMessage,
   type DiscoveryTurn,
 } from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+import { useCampaignWorkspace } from '@/lib/campaign-context';
 
 export default function CampaignPage({ params }: { params: Promise<{ campaignId: string }> }) {
   const { campaignId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+  const { organizationId, specification } = useCampaignWorkspace();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [turn, setTurn] = useState<DiscoveryTurn | null>(null);
@@ -97,36 +95,16 @@ export default function CampaignPage({ params }: { params: Promise<{ campaignId:
     }
   }
 
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
-    );
-  }
-
   const confirmed = campaign?.status === 'SPECIFICATION_CONFIRMED';
 
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <Link href="/app/campaigns" className="text-sm text-muted hover:underline">
-        ← Campaigns
-      </Link>
-
+    <>
       {error && !campaign ? (
         <div className="mt-4">
           <ErrorState
             title={error.code === 'NOT_FOUND' ? 'Campaign not found' : 'Could not load this campaign'}
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? () => void refresh() : undefined}
           />
@@ -137,32 +115,13 @@ export default function CampaignPage({ params }: { params: Promise<{ campaignId:
         </div>
       ) : (
         <div className="mt-4">
-          <div className="flex items-start justify-between gap-4">
-            <h1 className="text-2xl font-semibold tracking-tight">{campaign.title}</h1>
-            <div className="flex shrink-0 gap-2">
-              <Link
-                href={`/app/campaigns/${campaignId}/inspiration`}
-                className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/30"
-              >
-                Inspiration →
-              </Link>
-              {/* Only once the facts are settled: directions are built from them. */}
-              {confirmed ? (
-                <Link
-                  href={`/app/campaigns/${campaignId}/creative`}
-                  className="rounded-md border border-line bg-line/30 px-3 py-1.5 text-sm hover:bg-line/50"
-                >
-                  Creative →
-                </Link>
-              ) : null}
-            </div>
-          </div>
-          <p className="mt-1 text-sm text-muted">
+          <h2 className="text-h2">Brief</h2>
+          <p className="mt-1 max-w-content text-body text-muted">
             {confirmed
-              ? 'Specification confirmed.'
+              ? 'The brief is settled. Everything downstream is built from it.'
               : turn?.interview_complete
-                ? 'Review the specification below.'
-                : 'Discovery in progress.'}
+                ? 'Everything needed has been answered. Read it through, change anything, then confirm.'
+                : 'A few questions, in your own words. The snapshot fills in as you answer.'}
           </p>
 
           {error ? (
@@ -171,7 +130,10 @@ export default function CampaignPage({ params }: { params: Promise<{ campaignId:
             </div>
           ) : null}
 
-          <div className="mt-6 grid gap-6 lg:grid-cols-[2fr_1fr]">
+          {/* Conversation and snapshot side by side: the point of the
+              snapshot is watching it fill in while you answer, which a panel
+              below the fold cannot do. */}
+          <div className="mt-6 grid gap-6 lg:grid-cols-[1.35fr_1fr] lg:items-start">
             <div className="space-y-6">
               <Conversation
                 messages={messages}
@@ -186,9 +148,11 @@ export default function CampaignPage({ params }: { params: Promise<{ campaignId:
                 }
               />
 
-              {turn?.specification ? (
+              {/* Same gap: without a turn there was no specification to show.
+                  The confirmed one comes from the workspace context. */}
+              {turn?.specification || specification ? (
                 <SpecificationPanel
-                  specification={turn.specification}
+                  specification={turn?.specification ?? specification!}
                   confirmed={Boolean(confirmed)}
                   busy={busy}
                   onSave={(edits) =>
@@ -218,14 +182,33 @@ export default function CampaignPage({ params }: { params: Promise<{ campaignId:
               ) : null}
             </div>
 
+            {/*
+              A confirmed campaign has no `DiscoveryTurn` — `POST
+              /discovery/start` answers 409 and the page deliberately swallows
+              it. Before UI-2C that left this column as a permanent skeleton
+              and the brief invisible on its own screen, for every seeded
+              campaign. The layout already holds the confirmed specification,
+              so it is rendered through the same snapshot.
+            */}
             {turn ? (
-              <CompletenessRail known={turn.known} missing={turn.missing} />
+              <CampaignSnapshot
+                brief={fromInputs(turn.known)}
+                missing={turn.missing}
+                asking={turn.question?.field ?? null}
+                complete={Boolean(turn.interview_complete)}
+              />
+            ) : specification ? (
+              <CampaignSnapshot
+                brief={fromSpecification(specification)}
+                complete
+                confirmed
+              />
             ) : (
               <SkeletonRows rows={3} />
             )}
           </div>
         </div>
       )}
-    </AppShell>
+    </>
   );
 }

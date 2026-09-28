@@ -39,6 +39,10 @@ from app.domain.layout import (
 #: one number would be wrong everywhere.
 SAFE_AREAS: dict[Channel, SafeArea] = {
     Channel.INSTAGRAM_POST: SafeArea(top=0.06, right=0.06, bottom=0.06, left=0.06),
+    # Slightly deeper at the bottom than the square: the feed's own caption and
+    # action row sits immediately beneath a 4:5 frame, so the last band of the
+    # canvas is the first thing a thumb covers.
+    Channel.INSTAGRAM_PORTRAIT: SafeArea(top=0.06, right=0.06, bottom=0.08, left=0.06),
     Channel.INSTAGRAM_STORY: SafeArea(top=0.14, right=0.06, bottom=0.16, left=0.06),
     Channel.LINKEDIN: SafeArea(top=0.07, right=0.05, bottom=0.07, left=0.05),
     Channel.FACEBOOK: SafeArea(top=0.07, right=0.05, bottom=0.07, left=0.05),
@@ -52,6 +56,10 @@ SAFE_AREAS: dict[Channel, SafeArea] = {
 #: it is actually seen.
 _HEADLINE_SIZE: dict[Channel, float] = {
     Channel.INSTAGRAM_POST: 0.075,
+    # A fraction of a taller canvas. 0.065 of 1350px lands near the square's
+    # 0.075 of 1080px in absolute pixels, which is the size the two are
+    # actually read at side by side in the same feed.
+    Channel.INSTAGRAM_PORTRAIT: 0.065,
     Channel.INSTAGRAM_STORY: 0.055,
     Channel.LINKEDIN: 0.105,
     Channel.FACEBOOK: 0.105,

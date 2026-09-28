@@ -13,13 +13,13 @@ import Link from 'next/link';
 import { AppShell } from '@/components/app-shell';
 import {
   AssetsPanel,
-  CoveragePanel,
   DocumentsPanel,
   KnowledgePanel,
   ProposalsPanel,
 } from '@/components/brand-brain';
-import { ErrorState, SkeletonRows } from '@/components/states';
-import { ApiError, TERMINAL_STATUSES, api, type BrandBrain } from '@/lib/api';
+import { BrandCore, CampaignsUsingBrand } from '@/components/brand-core';
+import { ErrorState, SectionHeader, SkeletonRows } from '@/components/ui';
+import { ApiError, TERMINAL_STATUSES, api, type BrandBrain, type Campaign } from '@/lib/api';
 import { useWorkspace } from '@/lib/use-workspace';
 
 const POLL_MS = 1500;
@@ -30,9 +30,34 @@ export default function BrandBrainPage({ params }: { params: Promise<{ brandId: 
   const { organizationId } = workspace;
 
   const [brain, setBrain] = useState<BrandBrain | null>(null);
+  /**
+   * Campaigns written from this brand.
+   *
+   * The organization's campaign list filtered by `brand_id` — a real field on
+   * every campaign row. Fetched separately from the brain so a slow campaign
+   * list never delays the brand itself, and kept out of the poll loop because
+   * campaigns do not change while a document is being ingested.
+   */
+  const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!organizationId) return undefined;
+    const controller = new AbortController();
+    setCampaigns(null);
+    api
+      .listCampaigns(organizationId, controller.signal)
+      .then((page) => {
+        if (!controller.signal.aborted) {
+          setCampaigns(page.items.filter((c) => c.brand_id === brandId));
+        }
+      })
+      // A failure here costs the campaigns section, not the brand page.
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [brandId, organizationId]);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -89,6 +114,7 @@ export default function BrandBrainPage({ params }: { params: Promise<{ brandId: 
         <ErrorState
           title="Cannot load your workspace"
           message={workspace.error.message}
+          code={workspace.error.code}
           requestId={workspace.error.requestId}
           onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
         />
@@ -113,6 +139,7 @@ export default function BrandBrainPage({ params }: { params: Promise<{ brandId: 
           <ErrorState
             title={error.code === 'NOT_FOUND' ? 'Brand not found' : 'Could not load this brand'}
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? () => void load() : undefined}
           />
@@ -122,48 +149,28 @@ export default function BrandBrainPage({ params }: { params: Promise<{ brandId: 
           <SkeletonRows rows={4} />
         </div>
       ) : (
-        <div className="mt-4 space-y-6">
+        <div className="mt-4 space-y-section">
           <header>
-            <h1 className="text-2xl font-semibold tracking-tight">{brand.name}</h1>
-            <p className="mt-1 text-sm text-muted">
+            <p className="text-label uppercase text-muted">Brand</p>
+            <h1 className="mt-2 text-h1">{brand.name}</h1>
+            <p className="mt-2 max-w-content text-body text-muted">
               {brand.positioning ?? brand.description ?? 'No positioning captured yet.'}
             </p>
-            <dl className="mt-4 grid gap-4 sm:grid-cols-3">
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-muted">Industry</dt>
-                <dd className="mt-0.5 text-sm">{brand.industry ?? '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-muted">Audience</dt>
-                <dd className="mt-0.5 text-sm">{brand.audience_description ?? '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-muted">Tone</dt>
-                <dd className="mt-0.5 text-sm">
-                  {brand.voice.tone_attributes.length
-                    ? brand.voice.tone_attributes.join(', ')
-                    : '—'}
-                </dd>
-              </div>
-            </dl>
-            {brand.colors.length ? (
-              <div className="mt-4 flex items-center gap-2">
-                {brand.colors.map((colour) => (
-                  <span key={colour.hex} className="flex items-center gap-1.5 text-xs text-muted">
-                    <span
-                      className="inline-block h-4 w-4 rounded border border-line"
-                      style={{ background: colour.hex }}
-                    />
-                    {colour.name}
-                  </span>
-                ))}
-              </div>
+            {/* Industry sits with the name because it is identity, not a
+                statistic. Everything else moved into Brand Core below.
+                Deliberately not a `PlaceStamp`: that component announces
+                itself as "Market", and an industry is not a market. */}
+            {brand.industry ? (
+              <p className="mt-3 text-label uppercase text-muted">
+                <span className="sr-only">Industry: </span>
+                {brand.industry}
+              </p>
             ) : null}
           </header>
 
           {/* A failure anywhere in the pipeline is stated, not hidden. */}
           {brain.processing_errors.length ? (
-            <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/5 p-4">
+            <div role="alert" className="rounded-lg border border-danger/40 bg-danger/5 p-4">
               <p className="text-sm font-medium">Some documents could not be processed</p>
               <ul className="mt-2 space-y-1 text-xs text-muted">
                 {brain.processing_errors.map((message) => (
@@ -177,7 +184,15 @@ export default function BrandBrainPage({ params }: { params: Promise<{ brandId: 
             <ErrorState message={error.message} requestId={error.requestId} />
           ) : null}
 
-          <CoveragePanel fields={brain.field_status} />
+          <BrandCore brain={brain} />
+
+          <CampaignsUsingBrand campaigns={campaigns ?? []} loading={campaigns === null} />
+
+          <SectionHeader
+            level={2}
+            title="Knowledge sources"
+            description="The documents this brand’s answers are retrieved from."
+          />
 
           <DocumentsPanel
             documents={brain.documents}

@@ -52,10 +52,14 @@ packages = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Live provider tests are excluded from every ordinary run. They spend real
+# money, so opting in has to be deliberate: `pytest -m live`.
+addopts = "-m 'not live'"
 markers = [
     "unit: no I/O, no database, no network",
     "integration: requires the test database; mock providers only",
     "e2e: full campaign walk; mock providers only",
+    "live: calls a real provider API and costs money; never runs by default or in CI",
 ]
 filterwarnings = ["error::DeprecationWarning:app.*"]
 

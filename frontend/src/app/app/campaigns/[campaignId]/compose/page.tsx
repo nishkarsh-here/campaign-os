@@ -15,7 +15,6 @@
 
 import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
 import {
   ChannelVariants,
   ExportHistory,
@@ -33,7 +32,7 @@ import {
   type CompositionView,
   type ElementEdit,
 } from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+import { useCampaignWorkspace } from '@/lib/campaign-context';
 
 const DEFAULT_CHANNEL: Channel = 'instagram_post';
 
@@ -43,8 +42,7 @@ export default function ComposePage({
   params: Promise<{ campaignId: string }>;
 }) {
   const { campaignId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+  const { organizationId } = useCampaignWorkspace();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [view, setView] = useState<CompositionView | null>(null);
@@ -97,43 +95,18 @@ export default function ComposePage({
     }
   }
 
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
-    );
-  }
-
   const latest =
     view?.final_assets.find((asset) => asset.channel === channel) ?? null;
   const blocked = view?.report ? view.report.verdict !== 'PASS' : false;
 
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <div className="flex flex-wrap justify-between gap-4">
-        <Link
-          href={`/app/campaigns/${campaignId}/refine`}
-          className="text-sm text-muted hover:underline"
-        >
-          ← Brand check and refinement
-        </Link>
-      </div>
-
+    <>
       {error && !view ? (
         <div className="mt-4">
           <ErrorState
             title={error.code === 'NOT_FOUND' ? 'Campaign not found' : 'Could not load this page'}
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? () => void load() : undefined}
           />
@@ -146,7 +119,7 @@ export default function ComposePage({
         <div className="mt-4 space-y-6">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight">{campaign.title}</h1>
+              <h2 className="text-h2">Compose & export</h2>
               <p className="mt-1 text-sm text-muted">
                 Final branded asset — {CHANNEL_LABELS[channel]}.
               </p>
@@ -204,6 +177,7 @@ export default function ComposePage({
                   : undefined
               }
               message={error.message}
+              code={error.code}
               requestId={error.requestId}
             />
           ) : null}
@@ -260,6 +234,6 @@ export default function ComposePage({
           )}
         </div>
       )}
-    </AppShell>
+    </>
   );
 }

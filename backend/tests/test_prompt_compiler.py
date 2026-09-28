@@ -18,7 +18,12 @@ from app.domain.reference import AggregateReferenceStyle, Lighting, ReferenceAna
 from app.providers.gemini.prompt import GeminiPromptAdapter
 from app.providers.leonardo.prompt import LeonardoPromptAdapter
 from app.providers.mock.prompt import MockPromptAdapter
-from app.services.prompt_compiler import PromptCompiler, aspect_ratio_for
+from app.services.prompt_compiler import (
+    SUPPORTED_RATIOS,
+    PromptCompiler,
+    aspect_ratio_for,
+    text_safe_area_for,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -344,3 +349,49 @@ class TestTraceability:
                 lighting="l",
                 invented_field="nope",
             )
+
+
+class TestTheInstagramPortraitChannelCompiles:
+    """4:5 has to survive the whole compile, not just exist in the enum.
+
+    The ratio reaches the image provider and the text-safe-area guidance has
+    to be the portrait one — a plate told to keep its *left* third quiet is
+    useless to a layout that puts type across the bottom.
+    """
+
+    def test_the_generation_ratio_is_four_by_five(self) -> None:
+        assert aspect_ratio_for(Channel.INSTAGRAM_PORTRAIT) == "4:5"
+
+    def test_it_is_not_snapped_to_another_ratio(self) -> None:
+        """Before 4:5 was a supported ratio this snapped to 3:4, which is a
+        different frame and a different crop."""
+        assert "4:5" in SUPPORTED_RATIOS
+        assert aspect_ratio_for(Channel.INSTAGRAM_PORTRAIT) != aspect_ratio_for(
+            Channel.INSTAGRAM_POST
+        )
+
+    def test_the_quiet_region_is_the_lower_third(self) -> None:
+        guidance = text_safe_area_for("4:5")
+        assert "lower third" in guidance
+        assert "left third" not in guidance
+        assert "No lettering" in guidance
+
+    def test_every_supported_ratio_has_quiet_region_guidance(self) -> None:
+        """A ratio with no guidance silently falls back to the default, which
+        is wrong for a portrait frame."""
+        from app.services.prompt_compiler import _QUIET_REGIONS
+
+        for ratio in SUPPORTED_RATIOS:
+            assert ratio in _QUIET_REGIONS, ratio
+
+    def test_the_gemini_adapter_accepts_it(self) -> None:
+        """The ratio has to be one the image provider will take."""
+        from app.providers.gemini.prompt import GEMINI_ASPECT_RATIOS
+
+        assert aspect_ratio_for(Channel.INSTAGRAM_PORTRAIT) in GEMINI_ASPECT_RATIOS
+
+    def test_existing_channel_ratios_are_unchanged(self) -> None:
+        assert aspect_ratio_for(Channel.INSTAGRAM_POST) == "1:1"
+        assert aspect_ratio_for(Channel.INSTAGRAM_STORY) == "9:16"
+        assert aspect_ratio_for(Channel.LINKEDIN) == "16:9"
+        assert aspect_ratio_for(Channel.WEB_BANNER) == "16:9"

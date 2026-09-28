@@ -804,8 +804,15 @@ class FinalAssetView(DomainModel):
     mime_type: str
     size_bytes: int | None = None
     #: API path to the bytes. Served through the API so scope is checked on
-    #: every read — the browser never addresses storage directly.
+    #: every read — the browser never addresses storage directly. Carries a
+    #: short-lived signature, because an `<img src>` cannot send the scope
+    #: headers (`app/api/media_links.py`).
     url: str
+    #: The same bytes, as a file attachment. A separate field rather than
+    #: `url + "?download=true"`: `url` already carries a query string, so a
+    #: caller appending `?` silently corrupts the signature and gets a 404.
+    #: The server builds its own URLs.
+    download_url: str
     source_asset_id: str | None = None
     specification_version: int
     layout_version: int

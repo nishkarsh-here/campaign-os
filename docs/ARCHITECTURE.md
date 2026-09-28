@@ -18,7 +18,7 @@ Measured on this machine, not assumed:
 | pgvector   | **0.8.1 available** (`pg_available_extensions`) | RAG needs no extra infra. |
 | Redis      | 8.8.0 CLI present                           | Available if we ever need a queue. |
 | Docker     | **not installed**                           | Nothing may require docker-compose to run. |
-| Keys       | `GEMINI_API_KEY` set. No Leonardo/fal/Supabase keys. | Gemini is the only live provider today. |
+| Keys       | `GEMINI_API_KEY` set. No Leonardo/fal/Supabase keys. | Gemini is the only vendor with adapters. Reasoning and embeddings are live-verified; image generation is not — see DEPLOYMENT §9. |
 | Ports      | 3000 and 8000 free                          | Default dev ports. |
 
 Two facts drive real decisions: **there is no Docker**, so the dev story is
@@ -47,8 +47,8 @@ Brain retrieval needs no vector database service.
 ┌───────▼──────────────────┐          ┌──────────▼─────────────────────┐
 │ Postgres 18 + pgvector   │          │ Providers                      │
 │  app tables (product)    │          │  mock (default, offline)       │
-│  langgraph schema (exec) │          │  gemini · leonardo · local fs  │
-│  brand_chunks (vectors)  │          │                                │
+│  langgraph schema (exec) │          │  gemini (llm·image·embed)      │
+│  brand_chunks (vectors)  │          │  local fs (storage)            │
 └──────────────────────────┘          └────────────────────────────────┘
 ```
 
@@ -140,6 +140,61 @@ cannot name a vendor.
 LangChain's interface our domain interface, and it does not cover image
 generation cleanly. We use LangChain only where it genuinely saves work.
 **Cost:** a thin adapter per provider. Accepted.
+
+### ADR-016 — A token is verified by asking the identity provider
+
+**Decision.** `SupabaseAuthProvider` validates a bearer credential by sending
+it to Supabase's own `GET /auth/v1/user`. It does not verify the JWT locally
+against the project's shared secret or a JWKS.
+
+**Why.** Three reasons, in order of weight. A locally verified JWT keeps
+working after the session behind it has been signed out or revoked, until the
+token expires — and this application's whole posture is that authorization is
+checked at the boundary rather than inferred. Supabase explicitly recommends
+against shared-secret verification. And hand-rolling JWS verification with no
+JWT library in the dependency set is security code that should not be written
+when the vendor publishes an endpoint answering the same question.
+
+**Consequence.** One network call per request to an Auth server that lives in
+a single region. Bounded by a 30-second cache keyed by a digest of the token,
+so a page-load burst costs one round trip; the window is the interval in which
+a signed-out session still works. If that latency ever becomes the constraint,
+the replacement is local JWKS verification with a real JWT library — a change
+confined to this one module, which is the point of the seam.
+
+**Not negotiable regardless of mechanism:** identity is the subject with no
+fallback to email, the credential never reaches a log or a cache key, and the
+provider never touches the database.
+
+### ADR-015 — Image generation is API-only; nothing runs locally
+
+**Decision.** Every image is produced by a remote provider API. Campaign OS
+never loads model weights, never runs local GPU or Apple Metal inference, and
+ships no Stable Diffusion, Flux, SDXL, ComfyUI or Ollama image path. The
+machine running the app is the application runtime and nothing else.
+
+**Why.** Three reasons, in order of weight. A local model would make the
+product's output depend on the machine it happens to run on, which destroys
+reproducibility — the same approved specification would render differently on
+a laptop and a server. It would put multi-gigabyte weights and a GPU in the
+deployment contract, when the rest of the stack needs neither. And it would
+move the provider boundary from a `Protocol` we control into a runtime we do
+not, which is the one seam this architecture has protected since M0.
+
+**Consequence.** No image can be made without a working credential and a
+billed account. That is a real operational cost and it is the intended
+trade: `IMAGE_PROVIDER=mock` is a first-class, fully offline path, so the
+demo and the entire test suite never need either. What is *not* available is
+a middle ground where the app quietly generates locally when the API is
+unreachable — a fallback like that would make "is this real output?"
+unanswerable, and that question is the one the product exists to answer
+honestly.
+
+**Spending is bounded in code.** `IMAGE_MAX_RETRIES` (1 by default, capped at
+3) is the only retry in the image path, and retryability is a property of the
+*failure*, set where the HTTP status is known: a 429 or a 5xx is repeated, a
+401, a 400 and a safety refusal never are. Retrying a rejected credential is
+a second charge for the same answer.
 
 ### ADR-006 — AI renders the plate; deterministic code renders the brand
 Generative models are unreliable at typography, logos, exact hex colours and
@@ -312,6 +367,60 @@ face otherwise. It does not identify, download or substitute a named typeface �
 a brand whose guidelines say "Söhne" gets the fallback, and the render is
 correct in layout but not in typeface. Naming a font we cannot license or
 verify would be a worse answer than a documented fallback.
+
+### ADR-017 — Media bytes are reached by a signed, single-row, expiring link
+Every byte-serving route resolves a scope-checked row and reads *its* storage
+key — unchanged, and non-negotiable (see "No storage key in a URL" in
+`API_SPEC.md`). What changed is how a **browser** proves it may make that read.
+
+Authorization travels in two headers: `Authorization: Bearer …` says who, and
+`X-Organization-Id` says which organization the request acts in. A browser can
+put neither on `<img src>`, `<video src>` or a download link. So media was
+unreachable from the page that renders it: under `AUTH_PROVIDER=dev_stub` a
+caller with one membership worked by accident — the stub ignores the credential
+and a single membership resolves implicitly — while a caller with several got a
+403 telling them to send a header their browser cannot send. Under
+`AUTH_PROVIDER=supabase` nothing would have loaded for anyone.
+
+Each media `url` the API returns therefore carries `?token=…`: a payload naming
+the resource kind, the row id, the organization, the user and an expiry, signed
+with HMAC-SHA256 over `MEDIA_URL_SECRET` (`app/api/media_links.py`). It is
+minted by the request that was already authorized to read that row, and it can
+only be minted through `MediaLink`, which is built from a resolved `Principal`
+and has no parameter for an organization.
+
+**What the token replaces is the transport of identity and organization, and
+nothing else.** `media_access(kind, id_path_param)` in `app/api/deps.py`
+verifies the signature, checks the token's kind and row id against the route and
+its path, **re-reads membership from the database**, and hands the route an
+ordinary `Principal`. The route then resolves the row through the same
+organization-scoped repository as before. So:
+
+- there is no key, path or filename in a token — there is nothing to traverse;
+- a link is bound to one kind *and* one row, so it cannot be replayed against
+  another plate or another route, and the check is the dependency rather than
+  something a route must remember to do;
+- revoking a membership revokes every outstanding link for that organization
+  immediately, rather than at expiry;
+- headers still work unchanged, which is what API clients, scripts and the test
+  suite use.
+
+**Why not an organization id in the query string.** It was the smaller change
+and the wrong one: it addresses the header that happened to fail first and
+leaves authentication broken, so it would look correct under the dev stub and
+401 for every user the day a real identity provider was switched on. An
+unsigned organization id in a URL is also a bearer capability with no expiry and
+no binding to a person.
+
+**The secret has no shipped default.** Unset, the process generates one at
+startup, so the offline demo and the tests configure nothing and no install
+ships with a key that is identical everywhere. Two instances with two generated
+keys reject each other's links, so `Settings` refuses to start without an
+explicit `MEDIA_URL_SECRET` when `APP_ENV=production`.
+
+**A variant is built by the server, never by appending.** `url` already carries
+a query string, so `url + "?download=true"` folds the flag into the token value
+and 404s. `FinalAssetView.download_url` exists for that reason.
 
 ---
 

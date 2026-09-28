@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db.models import CampaignRow
 from app.domain.campaign import CampaignBrief, CampaignInputs, InterviewQuestion
+from app.domain.common import CampaignRecordStatus
 from app.domain.workspace import Principal
 from app.errors import Conflict, NotFound, ValidationFailed
 from app.graph.build import build_discovery_graph
@@ -45,10 +46,14 @@ log = get_logger(__name__)
 #: Sentinel: an existing thread is read, never re-invoked.
 _NO_INVOKE = object()
 
-STATUS_DRAFT = "DRAFT"
-STATUS_INTERVIEWING = "INTERVIEWING"
-STATUS_SPEC_READY = "SPECIFICATION_READY"
-STATUS_SPEC_CONFIRMED = "SPECIFICATION_CONFIRMED"
+#: The row lifecycle, from the one enum the database check constraint is also
+#: generated from (`CampaignRecordStatus`). Bare strings here is how the column
+#: and the domain came to disagree in the first place.
+STATUS_DRAFT = CampaignRecordStatus.DRAFT.value
+STATUS_INTERVIEWING = CampaignRecordStatus.INTERVIEWING.value
+STATUS_SPEC_READY = CampaignRecordStatus.SPECIFICATION_READY.value
+STATUS_SPEC_CONFIRMED = CampaignRecordStatus.SPECIFICATION_CONFIRMED.value
+STATUS_FAILED = CampaignRecordStatus.FAILED.value
 
 
 @dataclass(frozen=True)
@@ -206,7 +211,7 @@ class CampaignDiscoveryService:
                 await self.runs.finish(
                     run, status="FAILED", error="Discovery could not continue. Please try again."
                 )
-                await self.campaigns.set_status(campaign, "FAILED")
+                await self.campaigns.set_status(campaign, STATUS_FAILED)
                 raise ValidationFailed("Discovery could not continue. Please try again.") from exc
             snapshot = await graph.aget_state(config)
 

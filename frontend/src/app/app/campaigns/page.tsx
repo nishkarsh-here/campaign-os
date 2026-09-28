@@ -82,6 +82,7 @@ export default function CampaignsPage() {
         <ErrorState
           title="Cannot load your workspace"
           message={workspace.error.message}
+          code={workspace.error.code}
           requestId={workspace.error.requestId}
           onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
         />
@@ -150,6 +151,7 @@ export default function CampaignsPage() {
         {error ? (
           <ErrorState
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? load : undefined}
           />

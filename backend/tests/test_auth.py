@@ -39,7 +39,15 @@ class TestDevStub:
 
     def test_it_refuses_to_construct_in_production(self) -> None:
         with pytest.raises(RuntimeError, match="never run in production"):
-            DevStubAuthProvider(Settings(app_env="production", auth_provider="dev_stub"))
+            DevStubAuthProvider(
+                # A production `Settings` also needs a media signing key; that
+                # is a separate guard, and this test is about the auth one.
+                Settings(
+                    app_env="production",
+                    auth_provider="dev_stub",
+                    media_url_secret="test-signing-key",
+                )
+            )
 
 
 class TestRegistry:

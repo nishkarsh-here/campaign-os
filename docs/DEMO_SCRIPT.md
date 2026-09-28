@@ -302,10 +302,17 @@ Press **Download**.
 
 Say these before someone asks, rather than after:
 
-- **Live Gemini generation is not verified in this environment.** The adapter
-  exists and is covered by tests driving a fake SDK client; the credential
-  available here is rejected by the provider. Mock mode is the guaranteed path,
-  by design.
+- **Live Gemini reasoning and embeddings are verified; image generation is
+  not.** All three adapters are built and covered by tests driving a fake SDK
+  client. Against a real key the first two pass their smoke tests; the image
+  one does not run at all: image generation is not available on the free tier
+  (`429`, *"limit: 0 requests per day"*). A second cause — the adapter asking
+  for `image/png`, which no Gemini image model produces — has been fixed, but
+  the fix cannot be proven without a billed key. See DEPLOYMENT §9. Mock mode
+  is the guaranteed path, by design.
+- **Only two vendors are implemented**, `mock` and `gemini`. Leonardo, Tavily
+  and Supabase storage are Protocol seams with no adapter behind them;
+  selecting one fails at startup rather than degrading quietly.
 - **Print output is out of scope.** The layout engine can size an A3 canvas;
   print *production* — CMYK, bleed, crop marks, PDF — is not built, and the API
   refuses a print channel with a reason.

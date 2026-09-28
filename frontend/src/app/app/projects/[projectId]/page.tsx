@@ -1,141 +1,191 @@
 'use client';
 
 /**
- * A single project: its details, and the campaigns inside it.
+ * A project, as a workspace.
  *
- * The campaign list is filtered client-side from the organization's campaigns
- * rather than through a project-scoped endpoint. That keeps the API surface as
- * it is for a list that is small by construction — a project holds a handful
- * of campaigns, not thousands — and adding a filter parameter for it would be
- * a schema change for a page that already has the data.
+ * The layout above states the scope — project, brand, markets, campaign count.
+ * This page is what is *in* it: each campaign with the place it runs in, where
+ * it has got to, and the one thing it is waiting for.
+ *
+ * Every campaign row is real: title and status from the campaign list, market
+ * from its specification. What a row deliberately does not show is a thumbnail
+ * or a stage indicator, because both would need a per-campaign summary request
+ * and this list can hold a dozen — see the note on `CampaignCard`.
  */
 
-import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
-import { EmptyState, ErrorState, SkeletonRows } from '@/components/states';
-import { ApiError, api, type Campaign, type Project } from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+import {
+  Card,
+  EmptyState,
+  PlaceStamp,
+  Reveal,
+  SectionHeader,
+  SkeletonRows,
+  StatusBadge,
+  buttonStyles,
+} from '@/components/ui';
+import type { Campaign, CampaignSpecification } from '@/lib/api';
+import { statusMeaning } from '@/lib/campaign-status';
+import { useProjectScope } from '@/lib/project-context';
 
-export default function ProjectPage({ params }: { params: Promise<{ projectId: string }> }) {
-  const { projectId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+export default function ProjectPage() {
+  const { project, campaigns, markets, specs, resolving } = useProjectScope();
 
-  const [project, setProject] = useState<Project | null>(null);
-  const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
+  // The layout owns the error gate; a null project here means still loading.
+  if (!project) return <SkeletonRows rows={3} />;
 
-  const load = useCallback(() => {
-    if (!organizationId) return undefined;
-    const controller = new AbortController();
-    // Clear first: switching organizations must not leave the previous
-    // organization's project on screen while the new one loads.
-    setProject(null);
-    setCampaigns(null);
-    setError(null);
-    Promise.all([
-      api.getProject(projectId, organizationId, controller.signal),
-      api.listCampaigns(organizationId, controller.signal),
-    ])
-      .then(([result, page]) => {
-        if (controller.signal.aborted) return;
-        setProject(result);
-        setCampaigns(page.items.filter((c) => c.project_id === projectId));
-      })
-      .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
-        setError(err instanceof ApiError ? err : new ApiError('INTERNAL', String(err), 0));
-      });
-    return () => controller.abort();
-  }, [projectId, organizationId]);
-
-  useEffect(load, [load]);
-
-  // A /me failure leaves organizationId null, so this page's own fetch never
-  // runs and it would otherwise show a loading skeleton for ever. Surface the
-  // workspace error instead — every async surface owes all four states
-  // (UI_SPEC "Design principles", CLAUDE.md Definition of Done).
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
-    );
-  }
+  const waiting = campaigns.filter((c) => statusMeaning(c.status).awaitsHuman);
 
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <Link href="/app" className="text-sm text-muted hover:underline">
-        ← Projects
-      </Link>
-
-      <div className="mt-4">
-        {error ? (
-          // A project in another organization returns 404, exactly as a
-          // non-existent one does (API_SPEC §Scope).
-          <ErrorState
-            title={error.code === 'NOT_FOUND' ? 'Project not found' : 'Could not load this project'}
-            message={error.message}
-            requestId={error.requestId}
-            onRetry={error.isRetryable ? load : undefined}
+    <div className="space-y-section">
+      {waiting.length > 0 ? (
+        <section aria-labelledby="project-waiting">
+          <SectionHeader
+            title={<span id="project-waiting">Waiting on you</span>}
+            description="These cannot move until someone in the project makes a decision."
           />
-        ) : project === null ? (
-          <SkeletonRows rows={2} />
-        ) : (
-          <>
-            <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
-            <p className="mt-1 text-muted">{project.description ?? 'No description yet.'}</p>
+          <ul className="mt-lg space-y-3">
+            {waiting.map((campaign, i) => (
+              <CampaignCard
+                key={campaign.id}
+                campaign={campaign}
+                spec={specs.get(campaign.id) ?? null}
+                index={i}
+                emphasise
+              />
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
-            <h2 className="mt-8 text-sm font-medium">Campaigns</h2>
-            {campaigns === null ? (
-              <div className="mt-3">
-                <SkeletonRows rows={2} />
-              </div>
-            ) : campaigns.length === 0 ? (
-              <div className="mt-3">
-                <EmptyState
-                  title="No campaigns in this project"
-                  description="Start one from the campaigns screen and it will appear here."
-                  action={
-                    <Link
-                      href="/app/campaigns"
-                      className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40"
-                    >
-                      Go to campaigns
-                    </Link>
-                  }
+      <section aria-labelledby="project-campaigns">
+        <SectionHeader
+          title={<span id="project-campaigns">Campaigns</span>}
+          description="Everything this project has produced or is producing."
+          actions={
+            <Link href="/app/campaigns" className={buttonStyles('secondary', 'md')}>
+              New campaign
+            </Link>
+          }
+        />
+        <div className="mt-lg">
+          {campaigns.length === 0 ? (
+            <EmptyState
+              title="No campaigns in this project"
+              description="Start one from the campaigns screen and it will appear here."
+              action={
+                <Link href="/app/campaigns" className={buttonStyles('primary', 'lg')}>
+                  Go to campaigns
+                </Link>
+              }
+            />
+          ) : (
+            <ul className="space-y-3">
+              {campaigns.map((campaign, i) => (
+                <CampaignCard
+                  key={campaign.id}
+                  campaign={campaign}
+                  spec={specs.get(campaign.id) ?? null}
+                  index={i}
                 />
-              </div>
-            ) : (
-              <ul className="mt-3 divide-y divide-line rounded-lg border border-line">
-                {campaigns.map((campaign) => (
-                  <li key={campaign.id}>
-                    <Link
-                      href={`/app/campaigns/${campaign.id}/overview`}
-                      className="flex items-center justify-between px-4 py-4 hover:bg-line/20"
-                    >
-                      <span className="text-sm font-medium">{campaign.title}</span>
-                      <span className="text-xs text-muted">
-                        {campaign.status.replace(/_/g, ' ').toLowerCase()}
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
-      </div>
-    </AppShell>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* Markets this project runs in — derived from its own campaigns, so it
+          is a restatement of real data rather than a second source for it. */}
+      <section aria-labelledby="project-markets">
+        <SectionHeader
+          title={<span id="project-markets">Markets in this project</span>}
+          description="Where this project’s campaigns have been written to belong."
+        />
+        <div className="mt-lg">
+          {resolving && markets.length === 0 ? (
+            <SkeletonRows rows={1} />
+          ) : markets.length === 0 ? (
+            <EmptyState
+              title="No market named yet"
+              description="A market appears once a campaign brief in this project names the place it runs in."
+            />
+          ) : (
+            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {markets.map((market, i) => (
+                <Reveal as="li" key={market.region} index={i}>
+                  <Card className="h-full">
+                    <h3 className="text-h3">{market.region}</h3>
+                    {market.languages.length > 0 ? (
+                      <p className="mt-1.5 text-label uppercase text-muted">
+                        {market.languages.join(' · ')}
+                      </p>
+                    ) : null}
+                    <p className="mt-3 border-t border-line pt-3 text-small tabular-nums text-muted">
+                      {market.campaignIds.length}{' '}
+                      {market.campaignIds.length === 1 ? 'campaign' : 'campaigns'}
+                    </p>
+                  </Card>
+                </Reveal>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/**
+ * One campaign in a project.
+ *
+ * Deliberately without a thumbnail or a stage bar. Both exist per campaign —
+ * `CampaignOverview` carries `stages` and `final_assets` — but reading them
+ * means one request per row, and a project list of twelve campaigns would open
+ * twelve. The command centre shows both, for the one campaign in view, at the
+ * cost of the one request that is reasonable there.
+ */
+function CampaignCard({
+  campaign,
+  spec,
+  index,
+  emphasise,
+}: {
+  campaign: Campaign;
+  spec: CampaignSpecification | null;
+  index: number;
+  emphasise?: boolean;
+}) {
+  const meaning = statusMeaning(campaign.status);
+  return (
+    <Reveal as="li" index={index}>
+      <Card padding={false} className={emphasise ? 'border-l-2 border-l-accent' : undefined}>
+        <Link
+          href={`/app/campaigns/${campaign.id}/overview`}
+          className="flex flex-col gap-3 p-5 transition-colors duration-fast hover:bg-line/20 sm:flex-row sm:items-center sm:gap-5"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block text-h3">{campaign.title}</span>
+            <PlaceStamp
+              region={spec?.region}
+              language={spec?.language}
+              occasion={spec?.timing_occasion}
+              detail="full"
+              className="mt-2"
+            />
+            {spec?.objective ? (
+              <span className="mt-2 block line-clamp-1 text-small text-muted">
+                {spec.objective}
+              </span>
+            ) : null}
+          </span>
+          <span className="flex shrink-0 flex-wrap items-center gap-3">
+            <StatusBadge tone={meaning.tone}>{meaning.label}</StatusBadge>
+            {meaning.invitation ? (
+              <span className="text-small text-accent">{meaning.invitation} →</span>
+            ) : null}
+          </span>
+        </Link>
+      </Card>
+    </Reveal>
   );
 }

@@ -75,7 +75,7 @@ backend/
     providers/
       base.py         Protocol interfaces
       registry.py     env -> concrete provider
-      mock/ gemini/ leonardo/ local/
+      mock/ gemini/ local/      (leonardo/ tavily/ supabase/ are not built)
     services/         orchestration + persistence (Milestone 1+)
     repositories/     DB access, one per aggregate (Milestone 1+)
     api/              FastAPI routers (Milestone 1+)
@@ -246,7 +246,7 @@ constrained editor, channel variants and export. Rules it established:
 - **Composition is a product service, not a graph stage** (ADR-014). Millisecond
   deterministic work with no model call and nothing to poll. The campaign graph
   was not touched.
-- **Print is out of scope and says so.** `COMPOSABLE_CHANNELS` is the five
+- **Print is out of scope and says so.** `COMPOSABLE_CHANNELS` is the six
   screen channels; composing a print size is refused with a reason. PNG and
   JPEG only — no PDF, no A3/A4 production.
 
@@ -437,8 +437,355 @@ email** (§A-1), and **Milestone 4 must resolve a campaign through the scoped
 repository before deriving a checkpoint `thread_id` from it** (§A-5), because
 the checkpointer has no concept of an organization.
 
-Next: nothing scheduled. See `M10_FINAL_REPORT.md` for status, limitations and
+**UI-2C in progress** — sub-phases A, B, C, D and E done; F outstanding.
+Rules it established so far:
+
+- **Version facts come from rows that stamp their own version.**
+  `GeneratedAssetView`, `GuardianResultView`, `GenerationView` and
+  `SpecificationRevisionRow` each carry the plan version they belong to, and
+  they cannot disagree. `/creative` cannot be used for this: it reads the
+  creative graph's checkpoint, and on a revised campaign it reports the version
+  the *gate* approved — a benchmark campaign returns v2 while the approved plan
+  is v3 and every plate was built from v3. That is not a gap, it is a wrong
+  number, and a version timeline built on it would be confidently false.
+- **A version appears because a row carries its number**, never because a gap
+  in the sequence implies one. A live campaign's v1 exists in the database with
+  nothing pointing at it, so the timeline's earliest entry is v2 — which is
+  therefore *not* called "the initial creative plan". Only v1 is, because only
+  that one is true by definition.
+- **A version never inherits another's brand verdict.** `versionBrandStatus`
+  reads checks stamped with that version alone; a version nobody checked says
+  "Not brand-checked", which is a different statement from a failure. Approving
+  a revision produces neither a visual nor a verdict, and the screen says both
+  out loud — they are the two things a reader is most likely to assume and most
+  likely to be wrong about.
+- **No author, anywhere.** `SpecificationRevisionRow` has no `requested_by` and
+  the API projects none, so a version reads "Revision recorded". The version
+  history is the surface people would cite in an argument about what happened
+  to a campaign; it is the worst possible place to invent a name.
+- **Structure only where the API takes structure.** `POST /revision` accepts
+  one string, so the writing prompts compose that string and nothing more.
+  Field-level KEEP/CHANGE/ADD/REMOVE editing is real and lives on the *proposed
+  plan*, because `PATCH /revision/delta` is the one endpoint that accepts a
+  per-field value.
+- **A protection is stated once.** `delta.keep` normally repeats
+  `locked_fields`; listing both reads as two protections where there is one, so
+  the stronger statement wins — "locked" says it could not have changed, "kept"
+  only says it did not.
+- **Localization preservation is structural, not observed.** Region, language
+  and audience live on the `CampaignBrief`, and a revision writes a
+  `CreativeSpecification`, so "the market did not change" is a fact about the
+  schema rather than a hopeful reading of one delta. The language renders
+  through `displayLanguage` — a brief stores "en", which is not a language to a
+  reader.
+- **One verdict per object, not one string per page.** Three scopes
+  legitimately carry a brand standing on the refine screen — the checked plate,
+  the creative being refined, and the plan version. The rule UI-2C-D
+  established is about two verdicts for *one* object side by side, and the test
+  that guards it is scoped accordingly.
+
+- **Generation fans out over providers, not over directions.** `GenerationView`
+  carries no direction id, ordinal or title anywhere, so a slot is titled by
+  its provider. "Direction 01" over a plate would be an association the backend
+  never made — and one a reader would believe, because it is the vocabulary the
+  previous screen taught them.
+- **One slot per provider, showing its latest attempt.** The batch contains
+  every superseded retry, so rendering `jobs` as a list showed the same
+  provider three times with two stale failures.
+- **The mock provider is named as a demo generator.** "Is this real output?" is
+  the first question anyone watching has, and an offline demo dressed as a
+  model answers it wrongly. `isOfflineProvider` drives a plain sentence beside
+  the plate.
+- **Only facts the API carries.** No request id, no seed, no provider latency —
+  none exist, and an empty row labelled "Request id" implies one existed and
+  was lost. Elapsed time is derived from `started_at`/`finished_at` and shown
+  as "Took", never as a latency it is not.
+- **A failed evaluation is not a low score.** `status` separates "not judged"
+  from "judged badly"; the unjudged get their own section that says so. A
+  plate nobody could score must never render as a bad one.
+- **The chain is shown, not just the verdict.** Dimension weights and
+  `disposition_reasons` sit behind a disclosure, because a bare "REJECT" is
+  exactly the unaccountable verdict the architecture was built to avoid.
+- **`NEEDS_REVIEW` is not `NEEDS_REVISION`.** Evaluation's disposition and the
+  guardian's verdict are different enums on different surfaces asking different
+  questions. Wording them alike tells a reader the two stages agreed.
+- **A check decided by code is not a check decided by a model.** `deterministic`
+  is carried onto the screen in words: a prohibited claim found by string
+  matching is a fact, a tone judgement is an opinion.
+- **"Why it matters" is ours and says so.** The backend has no such field, so
+  the sentences are fixed, per known check id, and attributed to Campaign OS —
+  never set beside the model's own `detail` as though it said them. An
+  unrecognised check gets nothing rather than a platitude.
+- **A verdict is said once per card.** It was a heading and a badge, and then
+  the backend's `summary` turned out to be the verdict label again for a clean
+  pass — three statements of one fact, which reads as three judgements that
+  happen to agree. The supporting sentence is the backend's when it adds
+  something, ours when it does not.
+- **A check in flight is not a failed check.** Every non-`COMPLETED` row used
+  to render as an error, so a legitimately running guardian read as a broken
+  one for as long as it took.
+- **One next action per question.** Both the generate and evaluate pages
+  carried a run control in the header *and* in the studio, with different
+  scopes and different labels. The studio owns it now, because it is what knows
+  what it would act on: "check the remaining two" passes exactly those two ids.
+- **The brand review and refinement share a page without echoing.** Separate
+  headings, separate busy states — a brand check used to relabel "Propose a
+  revision" as "Thinking…" — and one thread between them: "Refine this visual"
+  attaches `source_asset_id`, and says on screen that it did.
+- **A broken image is stated, not captioned.** `Plate` renders a failure in
+  words, because an `<img>` that cannot load renders as its own alt text and
+  reads like a description of a picture that is merely dark. A verdict beside
+  an image nobody can see has to say the image is missing.
+- **A status badge is its own worst backdrop.** `StatusBadge` puts the word at
+  the full token on a 10% wash of the same token, so the two move together and
+  the ratio is far tighter than the same word on the page. Measured there,
+  light `warning` sat at 4.38 and `success` at 4.47 — both readable-looking,
+  both failures.
+
+- **One mapping layer per stage, not interpretation in the JSX.**
+  `lib/creative.ts` owns every reading of a creative field. Three cards that
+  each interpret `strategic_rationale` for themselves are three cards that
+  drift apart.
+- **A field of the plan is not a field of the direction.** `visual_story`,
+  `camera` and `mood` belong to `CreativeSpecification`; a concept card cannot
+  show them and must not substitute a neighbouring field under the same
+  heading. That is a lie told in the user's own vocabulary.
+- **Agreement is not a difference.** The comparison marks an axis `differs`
+  only when the routes actually say different things, and shows what they share
+  separately.
+- **An override is a sparse diff.** Absent or null channel copy means inherit,
+  not "no headline". Resolved in one place, because four independent `or`
+  chains is how the screens came to disagree about the approved words.
+- **Read `locked_fields` from the specification, never a copied constant.** A
+  hardcoded list disagrees with the backend the day the backend changes.
+- **A closed gate and a missing permission are different sentences.** "Not
+  chosen" on an open gate misreports the state to the person who simply cannot
+  approve.
+- **Colour derived from data is not artwork.** The palette band is
+  `direction.palette`, labelled as a stated palette. No imagery exists at the
+  direction stage and none is invented.
+- **Keep the routes after the choice.** The set still holds all three, and a
+  decision a person cannot read back is a decision they cannot defend.
+
+- **The workspace is three columns, and the middle one is the work.** Meridian
+  left, work surface centre, campaign context right (`AppShell.aside`), all
+  owned by the campaign layout so none of it resets between stages. Below
+  1280px the context stacks *after* the content, which is the right reading
+  order, not a drawer that hides it.
+- **One next action, in one place.** The context rail owns it on every stage.
+  The command centre deliberately no longer repeats it as a hero — two
+  next-action affordances on one screen teach a person to trust neither.
+- **A market fact is useless without its implication.** `creativeImplication`
+  turns each fact into what it asks of the creative. Templates over real
+  values, never invented data: a field with no value produces no instruction.
+- **A confirmed brief must still be visible.** `POST /discovery/start` answers
+  409 once a campaign is confirmed, so there is no `DiscoveryTurn` — and the
+  brief screen rendered a permanent skeleton for every seeded campaign, hiding
+  the document the whole pipeline is built from. The snapshot now adapts the
+  confirmed specification through the same rendering path.
+- **`field_assertions` mixes both vocabularies.** A real specification carries
+  `campaign_objective` *and* `audience` *and* `target_audience`. A single-name
+  lookup silently finds nothing for half the rows, so every row tries each
+  known alias.
+- **`not_applicable` is an answer, not a gap.** Reporting it as "still needed"
+  asks someone the same question for ever.
+- **Highlight the field being asked, not every open one.** `missing` is every
+  remaining field; `question.field` is the one in play.
+- **Show the refusal beside the takeaway.** ADR-011 is only checkable when
+  `not_transferable` sits next to `style_takeaways` on the same card.
+- **Absent characteristics are not drawn.** `ReferenceAnalysis` has no texture
+  and no depth field. A chip nobody's model produced is a fabricated
+  observation about someone else's artwork.
+
+**UI-2B complete** — product home, projects, brands and the campaign command
+centre. Rules it established:
+
+- **Every number is counted, never estimated.** Campaign, brand, market and
+  claim counts are the lengths of lists the page actually fetched. Where the
+  data does not exist the section says so: there is no activity endpoint, so
+  home shows "Recent work" from `created_at` rather than an invented feed.
+- **No pin without a campaign.** The Atlas hero plots only markets derived from
+  real specifications, and renders a bare plane with a sentence when there are
+  none. A decorative pin on a product about locality would be the most
+  dishonest thing the interface could do.
+- **Provenance is checked before it is claimed.** The command centre's strip
+  emits "constrained by the Brand Brain" only when guardrails are non-empty,
+  "style learned from N references" only when analyses exist, and distinguishes
+  what a model proposed from what a person approved. A strip that narrates
+  unconditionally is decoration pretending to be an audit trail.
+- **`unrecorded` is not `inferred`.** A specification value with no
+  `field_assertion` is recorded without a stated source — not a guess. The
+  benchmark seeds specifications directly and so carries no assertions;
+  discovery-built campaigns carry real `stated` and `inferred`. The Local
+  Market panel reports that difference rather than smoothing it over.
+- **A project is a scope, not a page.** `projects/[projectId]/layout.tsx`
+  states project, brand, markets and campaign count on every screen beneath it.
+  A project row holds none of that — it is all derived from the organization's
+  campaigns filtered by `project_id`.
+- **Confirmed, inferred and unknown are the organising idea of a brand.**
+  Brand Core counts `field_status[].knowledge` and surfaces facts awaiting a
+  human decision, because only a person accepting a fact makes it brand truth.
+- **An empty panel names its gap.** And emptiness is passed in, not inferred
+  from `children`: a panel whose four children each return null still has four
+  children, so a truthiness test reports content for a blank box.
+- **A control nobody can use is not offered.** An approval gate shown to
+  someone without approval rights becomes "this needs someone with approval
+  rights" plus a read-only route in. Presentation only — no endpoint checks a
+  role (H-5).
+- **Markets cost one request per campaign.** There is no aggregate endpoint, so
+  home and project resolve specifications with a bounded fan-out. Every
+  campaign is resolved rather than the first few, because a partial sweep makes
+  the per-market counts wrong, and a wrong count is worse than a slow page.
+- **Measure contrast on a settled page.** Sampling immediately after a theme
+  switch reports failures that are only in-flight `transition-colors` values.
+
+**UI-2A frontend foundation complete** — application shell and information
+architecture. The redesign's first stage; `docs/UI_UX_VISION.md` is the brief.
+Rules it established:
+
+- **The information architecture lives in `src/lib/nav.ts`.** One declaration
+  of every destination and of the campaign journey. Screens read it; they do
+  not each hold a copy of "where does Generate live", which is how the audit
+  found stages that could be reached but never returned from.
+- **Persistent navigation is a route layout, not a shared component.**
+  `app/campaigns/[campaignId]/layout.tsx` is a client component, so it is not
+  unmounted between stages: the Meridian, the organization and the campaign's
+  identity survive a navigation. It also removed eight copies of the shell,
+  eight `/me` requests and eight independently-invented loading gates.
+- **A node declares what backs it.** `{kind:'stage'}` reads a real entry from
+  `CampaignOverview.stages`; `{kind:'optional'}` is for a destination with
+  working endpoints and no stage row, like Inspiration. Rendering an optional
+  node with a stage state would be inventing backend data.
+- **A missing summary means "available", never "not started".** With no
+  overview the rail still renders every node. Defaulting to PENDING would tell
+  someone their campaign had not begun because one request timed out.
+- **A blocked stage stays a link.** The backend decides what a stage accepts; a
+  person may look at one that is not ready. Refusing navigation in the UI is
+  how the product became one-way.
+- **The layout owns the `h1`.** Campaign identity is the page's one top-level
+  heading; each stage screen renders `h2` and down. Eight pages previously each
+  opened a new document with the title the header had just said.
+- **Capabilities, not roles.** Screens ask `can('approve')`. And the limit is
+  written down rather than glossed: no endpoint differentiates by role today,
+  so hiding a control is presentation, not access control. Nothing may claim
+  RBAC until the backend enforces it (audit finding H-5).
+- **Localization is rendered by one component.** `PlaceStamp` displays
+  `region`, `language` and `timing_occasion` identically everywhere and draws
+  nothing when they are absent. It must never parse them into structure the
+  domain does not have — `region` is one free-text string, not city and state.
+- **Motion is CSS until a surface needs more.** Two keyframes and four duration
+  tokens cover the whole vision document's motion table. Framer Motion is
+  adopted at the first surface that needs orchestrated animation, not before.
+- **A nav item must lead somewhere real.** `/app/projects` was listed for a
+  route that was never built — a 404 in the primary navigation. A test now
+  asserts every entry against the routes that exist.
+
+**UI-1 frontend foundation complete.** The design system, not the redesign.
+Rules it established:
+
+- **A token is defined once, in `globals.css`, for both themes.** Colour,
+  radius, elevation and layout all resolve through CSS variables that
+  `tailwind.config.ts` exposes by name. A value that exists in one theme only
+  renders as `transparent` in the other.
+- **Status colour is a token, never a palette shade.** `emerald-400` and its
+  siblings were hard-coded across 99 class usages; they are dark-background
+  shades and measured roughly 1.8:1 on the light theme — status words a
+  light-mode reader could not read. `success`/`warning`/`danger`/`info` resolve
+  per theme. The whole product now measures at or above 4.5:1 in both.
+- **Status is never carried by colour alone.** Every `StatusBadge` carries a
+  word. A colour-blind reader and a washed-out projector are both real, and a
+  test pins this.
+- **The typeface is committed, not fetched.** `next/font/local` against woff2
+  files in the repository, because CLAUDE.md §3.5 requires the demo to run with
+  no network forever and `next/font/google` fetches at build time.
+- **`extend`, never replace.** The numeric spacing and base type scales are
+  load-bearing across thirteen screens. New code uses the named tokens; existing
+  code keeps rendering byte-identically until its own phase.
+- **A primitive earns its place by repetition.** Button, Card, Field and the
+  rest each replaced a pattern already copied dozens of times. No Dialog and no
+  Tabs were built, because the product contains neither — an unused abstraction
+  fails the Definition of Done's first line.
+- **Never name a shadow after a colour.** `boxShadow.card` beside `colors.card`
+  made Tailwind resolve `shadow-card` as a shadow-*colour* utility and emit an
+  invisible white shadow. Token namespaces collide silently; only the compiled
+  CSS shows it.
+- **Focus is a global rule, not a per-component one.** There was no focus
+  styling anywhere before UI-1. One `:focus-visible` rule covers every
+  interactive element, including the ones later phases add.
+
+**Authentication foundation complete.** Rules it established:
+
+- **The provider answers "who?", never "may they?"** `AuthProvider` returns an
+  identity; membership and organization scope are resolved in
+  `app/api/deps.py` and are byte-identical in dev and production. Swapping the
+  identity provider must never touch the part that guards data.
+- **Identity is the subject.** `users.auth_subject` binds to Supabase's `id`.
+  There is no fallback to email anywhere — an email can be reassigned between
+  people, and that is how one person inherits another's memberships.
+- **A token is verified by asking Supabase**, not by verifying a JWT locally
+  with a shared secret, which Supabase itself recommends against. Local
+  verification also cannot see a revoked session until it expires.
+- **Nothing retains the credential.** The verification cache is keyed by a
+  SHA-256 digest; logs carry an exception type and a status code and nothing
+  else; `AppError.detail` is log-side only and never serialised.
+- **The anon key is public and the service-role key is not.** Auth uses the
+  publishable key because the request already carries the caller's own token;
+  a service-role key there would be a standing escalation for no benefit.
+- **Dev stub is load-bearing, not legacy.** The offline demo must keep running
+  with no identity provider, no keys and no network, forever.
+
+Next: UI-2C-F — compose and export, the last screens still structurally
+unchanged.
+
+Open backend gap, recorded by UI-2C-E and not worked around: **the revised
+specification is not projected.** `RevisionStageService.RevisionView` holds
+`revised_specification` and `_revision_view` drops it, returning only a `diff`
+of the changed fields. So the refine screen cannot read the revised plan's
+`locked_fields` — where `apply_revision` writes the five standing locks — and
+"what is protected" is the product's own differentiator. Workaround in use:
+`delta.keep` and `delta.explicit_unlocks`, which are per-revision truth and
+always correct, plus `/creative`'s `locked_fields` on campaigns where that
+endpoint's version is the current one. When both are empty the panel renders
+nothing rather than a reassuring fiction. Separately, and deliberately not
+added: no `requested_by` on a revision. See `M10_FINAL_REPORT.md` for status, limitations and
 the future roadmap.
+
+**Media access fixed** — the gap UI-2C-D recorded is closed. See ADR-017.
+Rules it established:
+
+- **A browser proves a media read with a signature, not a header.** Every media
+  `url` carries `?token=…`: one resource kind, one row id, one organization,
+  one user, one expiry, signed server-side. `Authorization` and
+  `X-Organization-Id` cannot be set on an `<img src>`, so header-only media was
+  unreachable from the page that renders it.
+- **The reported bug was the smaller half.** "Multi-organization users see no
+  plates" was what the dev stub happened to expose. The stub ignores the
+  credential, so a single membership worked by accident; with a real identity
+  provider *nothing* would have loaded for anyone. A fix that only added the
+  organization to the query string would have looked right and failed on the
+  day Supabase auth was switched on.
+- **The token replaces transport, never authorization.** `media_access()`
+  verifies the signature, checks kind and row id against the route, **re-reads
+  membership**, and hands the route an ordinary `Principal`. The route resolves
+  the row through the same scoped repository and reads the key from *it*. No
+  key, path or filename is ever in a token — there is nothing to traverse.
+- **Binding is the dependency, not a habit.** `media_access(kind, path_param)`
+  cannot be satisfied by a token for another row or another route, so a route
+  cannot forget to check what a signature was signed for.
+- **Membership is authority, not history.** Losing a membership revokes every
+  outstanding link immediately, rather than at expiry.
+- **No shipped signing key.** Unset means one per process, so the offline demo
+  and the tests configure nothing and no install ships a key that is the same
+  everywhere. Production must set `MEDIA_URL_SECRET` — two instances with two
+  generated keys reject each other's links, which presents as images that load
+  on refresh and not before — and `Settings` refuses to start without it.
+- **A URL variant is built by the server.** `url` carries a query string, so
+  `url + "?download=true"` folds the flag into the token and 404s.
+  `FinalAssetView.download_url` exists for exactly that.
+- **Every media reference goes through `mediaUrl()`.** A bare API path in a
+  `src` resolves against the *page* origin — the Next server, which serves no
+  bytes. The moodboard did this and rendered a broken image beside a perfectly
+  good analysis of it; a test now walks the components and fails on a raw one.
 
 ### Environment note
 

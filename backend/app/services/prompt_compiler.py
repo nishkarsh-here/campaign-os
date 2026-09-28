@@ -58,12 +58,38 @@ COMPILED_FROM: tuple[str, ...] = (
     "negative_constraints",
 )
 
-#: How the plate leaves room for type. Deliberately about *composition*, not
-#: about letterforms: the image model is being told where to be quiet.
-_TEXT_SAFE_AREA = (
-    "an uncluttered area with even tone where a headline and call to action "
-    "will be composited later — no lettering of any kind in the image itself"
-)
+#: Where a frame's type actually goes, per shape. Derived from the channel
+#: rather than fixed, because "leave the lower third quiet" is wrong advice
+#: for a 16:9 banner whose headline sits beside the subject — and a plate
+#: whose negative space is in the wrong place is one the renderer has to crop
+#: around or shrink type into.
+_QUIET_REGIONS: dict[str, str] = {
+    "9:16": "the lower third of the frame",
+    "4:5": "the lower third of the frame",
+    "3:4": "the lower third of the frame",
+    "2:3": "the lower third of the frame",
+    "1:1": "a broad band across the lower third of the frame",
+    "16:9": "the left third of the frame",
+    "21:9": "the left third of the frame",
+    "4:3": "the left third of the frame",
+    "3:2": "the left third of the frame",
+    "5:4": "a broad band across the lower third of the frame",
+}
+_DEFAULT_QUIET_REGION = "a broad band across the lower third of the frame"
+
+
+def text_safe_area_for(aspect_ratio: str) -> str:
+    """How the plate leaves room for type.
+
+    Deliberately about *composition*, not about letterforms: the image model
+    is being told where to be quiet, never what to write (ADR-006).
+    """
+    region = _QUIET_REGIONS.get(aspect_ratio, _DEFAULT_QUIET_REGION)
+    return (
+        f"keep {region} visually calm and even in tone — an uncluttered area "
+        "where a headline and call to action will be composited later. "
+        "No lettering of any kind in the image itself"
+    )
 
 
 class PromptCompiler:
@@ -77,6 +103,7 @@ class PromptCompiler:
         version: int = 1,
     ) -> CanonicalPrompt:
         source = {field: _plain(getattr(specification, field, None)) for field in COMPILED_FROM}
+        aspect_ratio = _aspect_ratio(context)
         canonical = CanonicalPrompt(
             campaign_id=specification.campaign_id,
             specification_id=specification.id,
@@ -100,10 +127,10 @@ class PromptCompiler:
             # Specification already established reaches the prompt.
             regional_cues=list(specification.regional_cues),
             typography_guidance=specification.typography_guidance,
-            text_safe_area=_TEXT_SAFE_AREA,
+            text_safe_area=text_safe_area_for(aspect_ratio),
             negative_constraints=_negatives(specification, context),
             reference_characteristics=_reference_characteristics(context),
-            aspect_ratio=_aspect_ratio(context),
+            aspect_ratio=aspect_ratio,
             source_fingerprint=fingerprint(source),
         )
         log.info(
@@ -183,7 +210,7 @@ def _reference_characteristics(context: CreativeContext | None) -> list[str]:
 
 #: Ratios every supported image provider accepts. A channel is snapped to the
 #: closest one rather than sent a ratio a provider would reject.
-SUPPORTED_RATIOS: tuple[str, ...] = ("1:1", "3:4", "4:3", "9:16", "16:9")
+SUPPORTED_RATIOS: tuple[str, ...] = ("1:1", "4:5", "3:4", "4:3", "9:16", "16:9")
 
 
 def aspect_ratio_for(channel: Channel) -> str:

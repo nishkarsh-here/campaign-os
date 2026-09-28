@@ -1,148 +1,164 @@
 'use client';
 
 /**
- * The campaign command centre.
+ * THE CAMPAIGN COMMAND CENTRE.
  *
- * The screen you open to find out where a campaign is. It reads one endpoint
- * and mutates nothing: every stage, score and verdict on it is owned by the
- * screen it links to, and this page is a summary of those rather than a second
- * opinion about them.
+ * The screen you open to find out where a campaign is and what it needs from
+ * you. It reads no endpoint of its own: the campaign layout already resolved
+ * the summary and the creative context for the Meridian and the header, so this
+ * page composes that shared state rather than issuing a second request for the
+ * same thing — which is what it used to do.
+ *
+ * It mutates nothing. Every stage, score and verdict belongs to the screen it
+ * links to, and this page is a summary of those rather than a second opinion
+ * about them. That discipline is why it cannot drift from the truth.
+ *
+ * UI-2C moved the next action out to the persistent context rail, so it is in
+ * the same place on every stage rather than living only here. What remains is
+ * the fuller read: why this campaign belongs in its market, how it got here,
+ * what was recommended, where every stage stands, and what has been produced.
  */
 
-import { use, useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
+import { useEffect, useState } from 'react';
 import {
-  BrandStatusCard,
-  CampaignFacts,
-  FinalAssetStrip,
-  NextAction,
-  RecommendationCard,
-  StageSpine,
-} from '@/components/campaign-overview';
-import { ErrorState, SkeletonRows } from '@/components/states';
-import { ApiError, api, type CampaignOverview } from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+  Card,
+  ErrorState,
+  Reveal,
+  SkeletonRows,
+  StatusBadge,
+} from '@/components/ui';
+import {
+  LocalMarketPanel,
+  Progress,
+  ProvenanceStrip,
+  provenanceNotes,
+} from '@/components/command-center';
+import { FinalAssetStrip, RecommendationCard } from '@/components/campaign-overview';
+import { useCampaignWorkspace } from '@/lib/campaign-context';
+import { resolveJourney } from '@/lib/nav';
 
 /** Only while something is actually moving; stops the moment nothing is. */
 const POLL_MS = 2500;
 
-export default function OverviewPage({
-  params,
-}: {
-  params: Promise<{ campaignId: string }>;
-}) {
-  const { campaignId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+export default function CommandCentrePage() {
+  const { campaignId, overview, overviewError, specification, creativeContext, refresh } =
+    useCampaignWorkspace();
 
-  const [view, setView] = useState<CampaignOverview | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
-
-  const load = useCallback(
-    async (signal?: AbortSignal) => {
-      if (!organizationId) return;
-      const next = await api.getCampaignOverview(campaignId, organizationId, signal);
-      if (!signal?.aborted) setView(next);
-    },
-    [campaignId, organizationId],
-  );
-
-  useEffect(() => {
-    if (!organizationId) return undefined;
-    const controller = new AbortController();
-    setView(null);
-    setError(null);
-    load(controller.signal).catch((err: unknown) => {
-      if (controller.signal.aborted) return;
-      setError(err instanceof ApiError ? err : new ApiError('INTERNAL', String(err), 0));
-    });
-    return () => controller.abort();
-  }, [load, organizationId]);
+  const [polls, setPolls] = useState(0);
 
   // A dashboard that keeps polling a finished campaign is a dashboard nobody
-  // leaves open. This stops as soon as no stage is running.
-  const running = view?.stages.some((stage) => stage.state === 'RUNNING') ?? false;
+  // leaves open. This stops the moment no stage is running — and it refreshes
+  // the layout's summary, so the Meridian in the rail advances with the page
+  // rather than going stale behind it.
+  const running = overview?.stages.some((stage) => stage.state === 'RUNNING') ?? false;
   useEffect(() => {
     if (!running) return undefined;
     const timer = setTimeout(() => {
-      void load().catch(() => undefined);
+      refresh();
+      setPolls((n) => n + 1);
     }, POLL_MS);
     return () => clearTimeout(timer);
-  }, [running, view, load]);
+  }, [running, polls, refresh]);
 
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
+  // A summary that failed for a recoverable reason — a timeout, a 500 — is
+  // reported with a retry. The frame handles the two unrecoverable codes, so
+  // reaching here with an error means trying again is worth offering.
+  if (!overview) {
+    return overviewError ? (
+      <ErrorState
+        title="Could not load this campaign’s summary"
+        message={overviewError.message}
+        code={overviewError.code}
+        requestId={overviewError.requestId}
+        onRetry={refresh}
+      />
+    ) : (
+      <SkeletonRows rows={5} />
     );
   }
 
+  const nodes = resolveJourney(campaignId, overview);
+  const notes = provenanceNotes(overview, creativeContext);
+  const failures = overview.failed_generations;
+
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <div className="flex flex-wrap justify-between gap-4">
-        <Link href="/app/campaigns" className="text-sm text-muted hover:underline">
-          ← Campaigns
-        </Link>
-        {view ? (
-          <Link
-            href={`/app/campaigns/${campaignId}`}
-            className="text-sm text-muted hover:underline"
-          >
-            Campaign Specification →
-          </Link>
-        ) : null}
+    <div className="space-y-section">
+      {/* A failure is stated at the top, above the next decision: deciding
+          something while an earlier step is silently broken is worse than
+          being interrupted. */}
+      {failures > 0 ? (
+        <ErrorState
+          title={`${failures} generation${failures === 1 ? '' : 's'} failed`}
+          message="Some visuals could not be produced. Open Generate to see the reason and retry."
+        />
+      ) : null}
+
+      {/*
+        No next-action hero here. The context rail carries it on every stage,
+        in one place — two next-action affordances on one screen is how a person
+        learns to trust neither. This page is the fuller read.
+      */}
+      <div className="grid gap-6 lg:grid-cols-[1.15fr_1fr] lg:items-start">
+        <Reveal className="space-y-6">
+          <LocalMarketPanel specification={specification} />
+          <ProvenanceStrip notes={notes} />
+        </Reveal>
+
+        <Reveal index={1} className="space-y-6">
+          <RecommendationCard view={overview} />
+          <GuardianCard view={overview} />
+        </Reveal>
       </div>
 
-      {error && !view ? (
-        <div className="mt-4">
-          <ErrorState
-            title={error.code === 'NOT_FOUND' ? 'Campaign not found' : 'Could not load this page'}
-            message={error.message}
-            requestId={error.requestId}
-            onRetry={error.isRetryable ? () => void load() : undefined}
-          />
-        </div>
-      ) : !view ? (
-        <div className="mt-6">
-          <SkeletonRows rows={5} />
-        </div>
-      ) : (
-        <div className="mt-4 space-y-6">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{view.title}</h1>
-            <p className="mt-1 text-sm text-muted">
-              {view.brand_name} · {view.status.replace(/_/g, ' ').toLowerCase()}
-            </p>
-          </div>
+      <Progress nodes={nodes} />
 
-          {error ? <ErrorState message={error.message} requestId={error.requestId} /> : null}
+      <FinalAssetStrip view={overview} />
+    </div>
+  );
+}
 
-          <NextAction view={view} />
+/**
+ * The brand check's verdict.
+ *
+ * Replaces `BrandStatusCard` here so the verdict can carry its own explanation
+ * of what it means — a PASS and a NEEDS_REVISION lead to different actions and
+ * the word alone does not say which.
+ */
+function GuardianCard({ view }: { view: Parameters<typeof provenanceNotes>[0] }) {
+  const verdict = view.guardian_verdict;
+  if (!verdict || view.guardian_checked === 0) {
+    return (
+      <Card>
+        <h2 className="text-h3">Brand check</h2>
+        <p className="mt-3 text-body text-muted">
+          The Brand Guardian has not run for this campaign yet. It checks the work against the
+          brand’s own rules before anything ships.
+        </p>
+      </Card>
+    );
+  }
 
-          <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
-            <div className="space-y-6">
-              <StageSpine view={view} />
-              <FinalAssetStrip view={view} />
-            </div>
-            <div className="space-y-6">
-              <CampaignFacts view={view} />
-              <RecommendationCard view={view} />
-              <BrandStatusCard view={view} />
-            </div>
-          </div>
-        </div>
-      )}
-    </AppShell>
+  const meaning: Record<string, { tone: 'positive' | 'caution' | 'negative' | 'neutral'; text: string }> = {
+    PASS: { tone: 'positive', text: 'Nothing in the work contradicts the brand’s rules.' },
+    NEEDS_REVISION: {
+      tone: 'caution',
+      text: 'Something needs changing before this can ship. Refine explains what.',
+    },
+    REJECT: { tone: 'negative', text: 'The work cannot ship against this brand as it stands.' },
+    UNKNOWN: { tone: 'neutral', text: 'The checks did not produce a verdict.' },
+  };
+  const detail = meaning[verdict] ?? meaning.UNKNOWN!;
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-h3">Brand check</h2>
+        <StatusBadge tone={detail.tone}>{verdict.replace(/_/g, ' ').toLowerCase()}</StatusBadge>
+      </div>
+      <p className="mt-3 text-body text-muted">{detail.text}</p>
+      <p className="mt-3 text-label uppercase text-muted">
+        {view.guardian_checked} {view.guardian_checked === 1 ? 'check' : 'checks'} run
+      </p>
+    </Card>
   );
 }

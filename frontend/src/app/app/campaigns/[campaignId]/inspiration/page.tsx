@@ -10,8 +10,6 @@
  */
 
 import { use, useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
 import {
   CreativeContextPanel,
   PreferencePicker,
@@ -28,7 +26,9 @@ import {
   type PreferencesView,
   type StyleOption,
 } from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+import { ReferenceCard } from '@/components/reference-moodboard';
+import { useCampaignWorkspace } from '@/lib/campaign-context';
+import { capabilitiesFor } from '@/lib/capabilities';
 
 export default function InspirationPage({
   params,
@@ -36,8 +36,11 @@ export default function InspirationPage({
   params: Promise<{ campaignId: string }>;
 }) {
   const { campaignId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+  const { organizationId, me } = useCampaignWorkspace();
+  const membership = me?.organizations.find((m) => m.organization.id === organizationId);
+  const canEdit = capabilitiesFor(membership?.role ?? (me ? 'viewer' : null)).can(
+    'edit_campaign',
+  );
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [references, setReferences] = useState<CampaignReference[]>([]);
@@ -94,44 +97,16 @@ export default function InspirationPage({
     }
   }
 
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
-    );
-  }
-
   const selected = references.find((r) => r.id === selectedId) ?? null;
 
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <div className="flex flex-wrap justify-between gap-4">
-        <Link href={`/app/campaigns/${campaignId}`} className="text-sm text-muted hover:underline">
-          ← Discovery
-        </Link>
-        <Link
-          href={`/app/campaigns/${campaignId}/creative`}
-          className="text-sm text-muted hover:underline"
-        >
-          Creative directions →
-        </Link>
-      </div>
-
+    <>
       {error && !campaign ? (
         <div className="mt-4">
           <ErrorState
             title={error.code === 'NOT_FOUND' ? 'Campaign not found' : 'Could not load this page'}
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? () => void load() : undefined}
           />
@@ -142,9 +117,10 @@ export default function InspirationPage({
         </div>
       ) : (
         <div className="mt-4">
-          <h1 className="text-2xl font-semibold tracking-tight">{campaign.title}</h1>
-          <p className="mt-1 text-sm text-muted">
-            Inspiration and visual direction. We read the style, never copy the design.
+          <h2 className="text-h2">Inspiration</h2>
+          <p className="mt-1 max-w-content text-body text-muted">
+            Show the creative what good looks like. Campaign OS reads the style — the light,
+            the framing, the density — and never copies the design.
           </p>
 
           {error ? (
@@ -153,51 +129,55 @@ export default function InspirationPage({
             </div>
           ) : null}
 
-          <div className="mt-6 grid gap-6 lg:grid-cols-[1.3fr_1fr]">
-            <div className="space-y-6">
-              <ReferenceGallery
-                references={references}
-                selectedId={selectedId}
-                busy={busy}
-                onSelect={setSelectedId}
-                onUpload={(file, note) =>
-                  void run(() =>
-                    api.uploadReference(campaignId, organizationId, file, note || undefined),
-                  )
-                }
-              />
-              {selected ? (
-                <StyleDna
-                  reference={selected}
+          {/* Upload stays compact at the top; the board is the screen. */}
+          <div className="mt-6">
+            <ReferenceGallery
+              references={references}
+              selectedId={selectedId}
+              busy={busy}
+              onSelect={setSelectedId}
+              onUpload={(file, note) =>
+                void run(() =>
+                  api.uploadReference(campaignId, organizationId, file, note || undefined),
+                )
+              }
+            />
+          </div>
+
+          {/* The moodboard. Each card is the reference beside what was read
+              from it, and what will deliberately not be reused. */}
+          {references.length > 0 ? (
+            <ul className="mt-6 space-y-4">
+              {references.map((reference, i) => (
+                <ReferenceCard
+                  key={reference.id}
+                  reference={reference}
+                  index={i}
+                  canEdit={canEdit}
                   busy={busy}
                   onAccept={() =>
-                    void run(() => api.acceptReference(campaignId, selected.id, organizationId))
-                  }
-                  onReanalyze={() =>
                     void run(() =>
-                      api.reanalyzeReference(campaignId, selected.id, organizationId),
+                      api.acceptReference(campaignId, reference.id, organizationId),
                     )
                   }
                 />
-              ) : null}
-            </div>
+              ))}
+            </ul>
+          ) : null}
 
-            <div className="space-y-6">
-              <PreferencePicker
-                options={options}
-                preferences={preferences}
-                busy={busy}
-                onChange={(selectedStyles) =>
-                  void run(() =>
-                    api.setPreferences(campaignId, organizationId, selectedStyles),
-                  )
-                }
-              />
-              {context ? <CreativeContextPanel view={context} /> : <SkeletonRows rows={3} />}
-            </div>
+          <div className="mt-section grid gap-6 lg:grid-cols-2 lg:items-start">
+            <PreferencePicker
+              options={options}
+              preferences={preferences}
+              busy={busy}
+              onChange={(selectedStyles) =>
+                void run(() => api.setPreferences(campaignId, organizationId, selectedStyles))
+              }
+            />
+            {context ? <CreativeContextPanel view={context} /> : <SkeletonRows rows={3} />}
           </div>
         </div>
       )}
-    </AppShell>
+    </>
   );
 }

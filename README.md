@@ -52,6 +52,14 @@ and is never asked to render brand text.
 success, visible failure and per-provider retry. Every asset is a
 `VISUAL_PLATE` and the column records it.
 
+**Image generation is API-only.** Campaign OS never runs a model locally —
+no weights on disk, no local GPU or Metal inference, no Stable Diffusion,
+Flux, SDXL, ComfyUI or Ollama. The server builds a request, sends it to
+Gemini, and receives bytes. Every plate records its provider, model, request
+id, latency, requested frame and returned MIME type. Retries are capped at
+`IMAGE_MAX_RETRIES` (1 by default) and only a timeout, rate limit or 5xx is
+ever repeated — a refusal or a bad request costs money to be told twice.
+
 **7 · Creative Evaluator.** Ten dimensions scored 0–100 against the asset's
 *own* specification version. **The model scores; the code decides** — the
 overall total is a weighted mean and the disposition comes from published
@@ -111,20 +119,25 @@ ADR-013 and ADR-014).
 
 | | |
 |---|---|
-| Tests | 1,107 passing · ruff clean · mypy strict clean · tsc clean · Next build clean |
+| Tests | backend 1,402 passing · frontend 449 passing · ruff clean · mypy strict clean · tsc clean · Next build clean |
 | Migrations | 001–009, `alembic check` clean |
 | API | 62 routes under `/v1` |
 | Frontend | 13 routes, all four async states on every screen |
-| Providers | mock (complete) · Gemini (LLM, image, embedding) · Leonardo (image) · local + Supabase storage |
+| Providers | **API-only, no local inference.** mock (complete) · Gemini LLM + embeddings **live-verified** · Gemini image (`gemini-3.1-flash-image`) built, live-blocked by tier · local storage. Leonardo, Tavily and Supabase storage are interface seams with no adapter. |
 | Graph | LangGraph with a Postgres checkpointer, resume proved across two processes |
 
 **Honest limitations** are in [§9 of the deployment guide](docs/DEPLOYMENT.md#9-what-this-deployment-cannot-do)
 and in `M10_FINAL_REPORT.md`. The short version: background work runs in the API
 process and does not survive a restart (it is reconciled into a visible failure
 at startup); local storage does not work behind more than one instance; the
-renderer falls back to a bundled typeface when a brand has not uploaded one; and
-**live Gemini generation is unverified — the credential available in this
-environment is rejected by the provider.** Mock mode is the guaranteed path.
+renderer falls back to a bundled typeface when a brand has not uploaded one;
+**`leonardo`, `tavily` and `supabase` are names the registry accepts and then
+fails to import — they are Protocol seams, not adapters, and selecting one
+fails at startup**; and **live Gemini image generation is still unverified**,
+for two independent reasons recorded in
+[§9 of the deployment guide](docs/DEPLOYMENT.md#9-what-this-deployment-cannot-do).
+Reasoning and embeddings *are* live-verified. Mock mode remains the guaranteed
+path.
 
 ## Quick start
 
@@ -144,7 +157,13 @@ uv run uvicorn app.main:app --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
 
-Open <http://localhost:3000/app>.
+Open <http://localhost:3000/app>. The frontend needs no network: the product
+typeface is committed under `frontend/src/app/fonts/` and served from the build,
+not fetched from a CDN.
+
+```bash
+cd frontend && npm test        # vitest: auth logic in node, UI primitives in jsdom
+```
 
 ## Demo mode
 
@@ -175,8 +194,12 @@ The walkthrough is scripted in [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). In short: run migrations, run
 the API with `AUTH_PROVIDER=supabase` and `APP_ENV=production` (the dev auth
-stub refuses to construct in production), point `STORAGE_PROVIDER` at a bucket
-if you run more than one instance, and give the frontend `API_BASE_URL`.
+stub refuses to construct in production), set `SUPABASE_URL` and
+`SUPABASE_ANON_KEY`, point `STORAGE_PROVIDER` at a bucket if you run more than
+one instance, and give the frontend `API_BASE_URL`.
+
+Authentication is verified offline against a fake Supabase and has not yet run
+against a real project — the first deploy is the verification step.
 
 ## Read in this order
 
@@ -186,6 +209,7 @@ if you run more than one instance, and give the frontend `API_BASE_URL`.
 4. [`docs/GRAPH_SPEC.md`](docs/GRAPH_SPEC.md) — the LangGraph contract, and where the plan changed
 5. [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md) · [`docs/API_SPEC.md`](docs/API_SPEC.md) · [`docs/UI_SPEC.md`](docs/UI_SPEC.md)
 6. [`docs/TESTING.md`](docs/TESTING.md) · [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) · [`docs/ROADMAP.md`](docs/ROADMAP.md)
+7. [`docs/HYPERLOCAL_BENCHMARK.md`](docs/HYPERLOCAL_BENCHMARK.md) — the Indian hyperlocal benchmark: three fictional companies, nine campaigns, and what localisation means here
 
 ## Stack
 

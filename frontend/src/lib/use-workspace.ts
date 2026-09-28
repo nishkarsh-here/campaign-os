@@ -9,7 +9,9 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { ApiError, api, type Me } from '@/lib/api';
+import { clearSession, onSessionChange } from '@/lib/session';
 
 const STORAGE_KEY = 'campaign-os:active-organization';
 
@@ -32,6 +34,8 @@ export interface WorkspaceState {
 }
 
 export function useWorkspace(): WorkspaceState {
+  const router = useRouter();
+  const pathname = usePathname();
   const [me, setMe] = useState<Me | null>(null);
   const [organizationId, setOrg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,16 +63,24 @@ export function useWorkspace(): WorkspaceState {
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        setError(
-          err instanceof ApiError ? err : new ApiError('INTERNAL', String(err), 0),
-        );
+        const failure = err instanceof ApiError ? err : new ApiError('INTERNAL', String(err), 0);
+        if (failure.code === 'UNAUTHENTICATED') {
+          // One place, so every screen recovers the same way rather than each
+          // deciding for itself. The path is carried through so the person
+          // lands back where they were rather than at the front door.
+          clearSession();
+          const next = encodeURIComponent(pathname ?? '/app');
+          router.replace(`/app/signin?next=${next}`);
+          return;
+        }
+        setError(failure);
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
 
     return () => controller.abort();
-  }, [nonce]);
+  }, [nonce, router, pathname]);
 
   const setOrganizationId = useCallback((id: string) => {
     setOrg(id);
@@ -78,6 +90,10 @@ export function useWorkspace(): WorkspaceState {
       /* storage unavailable — the choice simply is not remembered */
     }
   }, []);
+
+  // A sign-out in the shell must invalidate every screen's view of who is
+  // signed in, not just the one that triggered it.
+  useEffect(() => onSessionChange(() => setNonce((n) => n + 1)), []);
 
   return {
     me,

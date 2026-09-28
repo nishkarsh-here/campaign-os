@@ -38,9 +38,9 @@ export function StatusPill({ status }: { status: BrandDocument['status'] }) {
   const failed = isFailure(status);
   const done = status === 'COMPLETED';
   const tone = failed
-    ? 'border-red-500/40 text-red-400'
+    ? 'border-danger/40 text-danger'
     : done
-      ? 'border-emerald-500/40 text-emerald-400'
+      ? 'border-success/40 text-success'
       : 'border-line text-muted';
   return (
     <span className={`rounded-full border px-2 py-0.5 text-xs ${tone}`}>
@@ -149,7 +149,7 @@ export function DocumentsPanel({
                     {doc.chunk_count ? ` · ${doc.chunk_count} passages indexed` : ''}
                   </p>
                   {/* A failure says what went wrong, never a bare spinner. */}
-                  {doc.error ? <p className="mt-1 text-xs text-red-400">{doc.error}</p> : null}
+                  {doc.error ? <p className="mt-1 text-xs text-danger">{doc.error}</p> : null}
                 </div>
                 <StatusPill status={doc.status} />
               </li>
@@ -309,8 +309,8 @@ export function ProposalsPanel({
 
 export function CoveragePanel({ fields }: { fields: FieldStatus[] }) {
   const tone = {
-    known: 'border-emerald-500/40 text-emerald-400',
-    inferred: 'border-amber-500/40 text-amber-400',
+    known: 'border-success/40 text-success',
+    inferred: 'border-warning/40 text-warning',
     unknown: 'border-line text-muted',
   };
   return (

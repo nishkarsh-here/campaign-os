@@ -72,6 +72,7 @@ DEFAULT_CHANNEL = Channel.INSTAGRAM_POST
 #: be a lie about what this does. Screen channels only, said out loud.
 COMPOSABLE_CHANNELS: tuple[Channel, ...] = (
     Channel.INSTAGRAM_POST,
+    Channel.INSTAGRAM_PORTRAIT,
     Channel.INSTAGRAM_STORY,
     Channel.LINKEDIN,
     Channel.FACEBOOK,

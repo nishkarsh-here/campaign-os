@@ -11,15 +11,12 @@
 
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { AppShell } from '@/components/app-shell';
-import {
-  ComparisonTable,
-  EvaluationBoard,
-  RecommendationPanel,
-} from '@/components/evaluation';
-import { EmptyState, ErrorState, SkeletonRows } from '@/components/states';
+import { ComparisonTable } from '@/components/evaluation';
+import { EvaluationStudio } from '@/components/evaluation-studio';
+import { ErrorState, SkeletonRows } from '@/components/ui';
 import { ApiError, api, type Campaign, type EvaluationView } from '@/lib/api';
-import { useWorkspace } from '@/lib/use-workspace';
+import { useCampaignWorkspace } from '@/lib/campaign-context';
+import { capabilitiesFor } from '@/lib/capabilities';
 
 const POLL_MS = 1500;
 const SLOW_POLL_MS = 5000;
@@ -31,8 +28,9 @@ export default function EvaluatePage({
   params: Promise<{ campaignId: string }>;
 }) {
   const { campaignId } = use(params);
-  const workspace = useWorkspace();
-  const { organizationId } = workspace;
+  const { organizationId, me } = useCampaignWorkspace();
+  const membership = me?.organizations.find((m) => m.organization.id === organizationId);
+  const capabilities = capabilitiesFor(membership?.role ?? (me ? 'viewer' : null));
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [view, setView] = useState<EvaluationView | null>(null);
@@ -98,19 +96,6 @@ export default function EvaluatePage({
     }
   }
 
-  if (workspace.error) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
-        <ErrorState
-          title="Cannot load your workspace"
-          message={workspace.error.message}
-          requestId={workspace.error.requestId}
-          onRetry={workspace.error.isRetryable ? workspace.reload : undefined}
-        />
-      </div>
-    );
-  }
-
   const hasResults = (view?.ranked.length ?? 0) > 0;
   // Anything at all to show — including failures. Gating the board on ranked
   // results alone made a batch where every evaluation failed look like one
@@ -118,34 +103,13 @@ export default function EvaluatePage({
   const hasAnything = (view?.evaluations.length ?? 0) > 0;
 
   return (
-    <AppShell
-      me={workspace.me}
-      activeOrganizationId={organizationId}
-      onOrganizationChange={workspace.setOrganizationId}
-    >
-      <div className="flex flex-wrap justify-between gap-4">
-        <Link
-          href={`/app/campaigns/${campaignId}/generate`}
-          className="text-sm text-muted hover:underline"
-        >
-          ← Generated creatives
-        </Link>
-        {/* Brand check and refinement, once there is something to check. */}
-        {view && view.can_evaluate ? (
-          <Link
-            href={`/app/campaigns/${campaignId}/refine`}
-            className="text-sm text-muted hover:underline"
-          >
-            Brand check & refine →
-          </Link>
-        ) : null}
-      </div>
-
+    <>
       {error && !campaign ? (
         <div className="mt-4">
           <ErrorState
             title={error.code === 'NOT_FOUND' ? 'Campaign not found' : 'Could not load this page'}
             message={error.message}
+            code={error.code}
             requestId={error.requestId}
             onRetry={error.isRetryable ? () => void load() : undefined}
           />
@@ -156,90 +120,58 @@ export default function EvaluatePage({
         </div>
       ) : (
         <div className="mt-4 space-y-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">{campaign.title}</h1>
-              <p className="mt-1 text-sm text-muted">
-                {hasResults && view.selected_asset_id
-                  ? 'A creative has been selected.'
-                  : hasResults
-                    ? 'Review the scores and choose a creative.'
-                    : hasAnything && !pending
-                      ? 'No creative could be evaluated. Retry below.'
-                      : 'Which of these creatives fits the campaign?'}
-              </p>
-            </div>
-            {view.can_evaluate ? (
-              <button
-                type="button"
-                disabled={busy || pending}
-                onClick={() => void run(() => api.startEvaluation(campaignId, organizationId))}
-                className="shrink-0 rounded-md border border-line bg-line/30 px-3 py-1.5 text-sm hover:bg-line/50 disabled:opacity-50"
-              >
-                {pending
-                  ? 'Evaluating…'
-                  : hasResults
-                    ? 'Re-evaluate'
-                    : 'Evaluate creatives'}
-              </button>
-            ) : null}
+          {/* The heading and the stage, and nothing that acts. Every control
+              belongs to the studio below, which knows what it would act on. */}
+          <div>
+            <h2 className="text-h2">Review</h2>
+            <p className="mt-1 max-w-content text-body text-muted">
+              {hasResults && view.selected_asset_id
+                ? 'A creative has been selected.'
+                : hasResults
+                  ? 'Review the scores and choose a creative.'
+                  : hasAnything && !pending
+                    ? 'No creative could be evaluated. Retry below.'
+                    : 'Which of these creatives fits the campaign?'}
+            </p>
           </div>
 
           {error ? <ErrorState message={error.message} requestId={error.requestId} /> : null}
 
-          {!view.can_evaluate ? (
-            <EmptyState
-              title="Nothing to evaluate yet"
-              description={
-                view.blocked_reason ??
-                'Generate creatives first — evaluation scores the plates a campaign has produced.'
-              }
-              action={
-                <Link
-                  href={`/app/campaigns/${campaignId}/generate`}
-                  className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/40"
-                >
-                  Go to generation
-                </Link>
-              }
-            />
-          ) : !hasAnything && !pending ? (
-            <EmptyState
-              title="Not evaluated yet"
-              description="Each plate is scored against the approved plan, the campaign and the brand — then ranked, with the reasoning shown."
-            />
-          ) : (
-            <>
-              <RecommendationPanel
-                view={view}
-                busy={busy}
-                onSelect={(assetId) =>
-                  void run(() =>
-                    api.selectCreative(campaignId, organizationId, {
-                      generated_asset_id: assetId,
-                    }),
-                  )
-                }
-              />
-              <EvaluationBoard
-                view={view}
-                busy={busy}
-                onSelect={(assetId) =>
-                  void run(() =>
-                    api.selectCreative(campaignId, organizationId, {
-                      generated_asset_id: assetId,
-                    }),
-                  )
-                }
-                onRetry={(evaluationId) =>
-                  void run(() => api.retryEvaluation(campaignId, evaluationId, organizationId))
-                }
-              />
-              <ComparisonTable view={view} />
-            </>
-          )}
+          <EvaluationStudio
+            view={view}
+            capabilities={capabilities}
+            busy={busy || pending}
+            onEvaluate={(assetIds) =>
+              void run(() => api.startEvaluation(campaignId, organizationId, assetIds))
+            }
+            onRetry={(evaluationId) =>
+              void run(() => api.retryEvaluation(campaignId, evaluationId, organizationId))
+            }
+            onSelect={(assetId, note) =>
+              void run(() =>
+                api.selectCreative(campaignId, organizationId, {
+                  generated_asset_id: assetId,
+                  ...(note ? { note } : {}),
+                }),
+              )
+            }
+          />
+
+          {/* The full score matrix, for someone who wants to read across every
+              plate at once. Folded away because the studio above is how the
+              work is actually judged. */}
+          {view.ranked.length > 1 ? (
+            <details className="rounded-lg border border-line">
+              <summary className="cursor-pointer px-5 py-4 text-label uppercase text-muted transition-colors duration-fast hover:text-ink">
+                Compare every score side by side
+              </summary>
+              <div className="border-t border-line p-5">
+                <ComparisonTable view={view} />
+              </div>
+            </details>
+          ) : null}
         </div>
       )}
-    </AppShell>
+    </>
   );
 }
