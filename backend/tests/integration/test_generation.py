@@ -744,3 +744,66 @@ class TestBatchOrdering:
 
         assert await repository.latest_batch_id(campaign.id) == second_batch
         assert second_batch != first_batch
+
+
+class TestIdempotency:
+    """What `API_SPEC.md` §Conventions now documents, and used to get wrong.
+
+    The document claimed every work-starting endpoint accepted an
+    `Idempotency-Key` header and that replaying it returned the original result.
+    No route ever read that header (audit findings DOC-2 / BG-5). What is real is
+    better than what was documented: the key is *derived server-side* from
+    `(prompt, provider, model, attempt)` and enforced by a unique constraint, so
+    a replay cannot double-charge even from a client that sends nothing — and a
+    deliberate retry still can, because the attempt number is part of the key.
+
+    Untested until this fix pass, which is how the documentation drifted away
+    from it without anything failing.
+    """
+
+    async def test_replaying_start_creates_no_second_job(self, session, workspace, storage) -> None:
+        campaign = await _campaign_with_approved_specification(session, workspace.org)
+        service = _service(session, workspace, storage)
+
+        first, _ = await service.start(campaign.id)
+        second, _ = await service.start(campaign.id)
+
+        assert first.batch is not None and second.batch is not None
+        assert [job.id for job in second.batch.jobs] == [job.id for job in first.batch.jobs]
+
+    async def test_replaying_start_charges_the_provider_once(
+        self, session, workspace, storage
+    ) -> None:
+        """The failure the mechanism exists to prevent: one click, one charge."""
+        campaign = await _campaign_with_approved_specification(session, workspace.org)
+        service = _service(session, workspace, storage)
+        view, _ = await service.start(campaign.id)
+        await service.run_jobs([uuid.UUID(job.id) for job in view.batch.jobs])
+
+        await service.start(campaign.id)
+
+        after = await service.current(campaign.id)
+        assert after.batch is not None
+        assert len(after.batch.assets) == 1, "a replay generated a second image"
+
+    async def test_the_key_is_derived_rather_than_supplied(
+        self, session, workspace, storage
+    ) -> None:
+        """Derived from the work, so two callers asking for the same thing
+        collide whether or not either sent a header."""
+        from app.services.generation import _idempotency_key
+
+        prompt_id = uuid.uuid4()
+        assert _idempotency_key(prompt_id, "mock", "m", attempt=1) == _idempotency_key(
+            prompt_id, "mock", "m", attempt=1
+        )
+
+    async def test_a_deliberate_retry_gets_its_own_key(self) -> None:
+        """The distinction the attempt number carries: a replay must not charge
+        twice, and a retry must be allowed to."""
+        from app.services.generation import _idempotency_key
+
+        prompt_id = uuid.uuid4()
+        assert _idempotency_key(prompt_id, "mock", "m", attempt=1) != _idempotency_key(
+            prompt_id, "mock", "m", attempt=2
+        )

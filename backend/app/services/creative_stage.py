@@ -180,6 +180,25 @@ class CreativeStageService:
                 # it. Re-invoking would reset the conversation, exactly as it
                 # would in discovery.
                 payload = _NO_INVOKE
+            elif await self.direction_sets.latest(campaign.id) is not None:
+                # Re-entering a campaign whose creative exists in the tables but
+                # not in a checkpoint. Same answer as above for the same reason,
+                # and the check has to be separate because `existing.values`
+                # cannot see a row: a set written by anything other than this
+                # process's own graph run — the benchmark seed, a restore, a
+                # future importer — leaves the checkpoint empty.
+                #
+                # Running the Creative Director here would produce a second
+                # version 1 and `_project` would write it over the first, which
+                # is how one click replaced an approved, human-decided direction
+                # set with fresh model output. Refusing to start is the whole
+                # fix; `_from_rows` then reports what is actually there.
+                log.info(
+                    "creative_reentry_from_rows",
+                    campaign_id=str(campaign.id),
+                    reason="direction set exists without a checkpoint",
+                )
+                return await self._from_rows(campaign)
             else:
                 payload = CampaignState(
                     campaign_id=str(campaign.id),
@@ -346,18 +365,63 @@ class CreativeStageService:
             graph = build_creative_graph(self.deps, checkpointer=saver)
             snapshot = await graph.aget_state(config)
         if not snapshot.values:
-            return CreativeTurn(
-                campaign_id=str(campaign.id),
-                gate=None,
-                direction_set=None,
-                selected_direction_id=None,
-                specification=None,
-                diversity=None,
-                approved=False,
-                gaps=[],
-                channels=await self._declared_channels(campaign.id),
-            )
+            return await self._from_rows(campaign)
         return await self._project(campaign, snapshot)
+
+    async def _from_rows(self, campaign: CampaignRow) -> CreativeTurn:
+        """The stage as the application tables record it, with no checkpoint.
+
+        `_project` exists to copy graph state *into* these tables because they
+        are what the UI reads (ADR-004: the checkpoint is execution state, not
+        product state). Reading them back when there is no execution state is
+        the same direction of flow, not a second source of truth — the rows are
+        the product state either way, and nothing here writes.
+
+        It matters because a campaign's creative work can be real without this
+        process ever having run the graph for it: the hyperlocal benchmark
+        writes an approved Creative Direction set and an approved Creative
+        Specification through the repositories (`scripts/seed_benchmark.py`),
+        deliberately stopping before generation. Reporting those campaigns as
+        having no creative at all told the reader the opposite of what the
+        database says, and offered to build routes that already existed.
+
+        Two fields cannot come from rows, and are reported as absent rather
+        than guessed:
+
+        * `gate` is `None`. A gate is open when the graph is parked on its node
+          (`_pending_gate_kind`); with no execution there is nothing parked and
+          nothing for a human to answer. Reporting one would draw an Approve
+          button whose resume has no checkpoint to resume.
+        * `gaps` is empty. `CreativeContext` is assembled inside the run and
+          has no table, so a gap list here would be invented.
+        """
+        direction_row = await self.direction_sets.latest(campaign.id)
+        specification_row = await self.specifications.latest(campaign.id)
+        direction_set = (
+            CreativeDirectionSet.model_validate(direction_row.payload)
+            if direction_row is not None
+            else None
+        )
+        specification = (
+            CreativeSpecification.model_validate(specification_row.payload)
+            if specification_row is not None
+            else None
+        )
+        return CreativeTurn(
+            campaign_id=str(campaign.id),
+            gate=None,
+            direction_set=direction_set,
+            selected_direction_id=(
+                str(direction_row.selected_direction_id)
+                if direction_row is not None and direction_row.selected_direction_id is not None
+                else None
+            ),
+            specification=specification,
+            diversity=direction_set.diversity if direction_set is not None else None,
+            approved=specification_row is not None and specification_row.approved_at is not None,
+            gaps=[],
+            channels=await self._declared_channels(campaign.id),
+        )
 
 
 def _pending_gate_kind(snapshot: Any) -> str | None:

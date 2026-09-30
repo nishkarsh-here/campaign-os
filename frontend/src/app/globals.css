@@ -501,3 +501,57 @@ a:focus-visible .plate-image {
     transform: none;
   }
 }
+
+/* ==========================================================================
+   The composition canvas — UI-2C-F.
+
+   `container-type: size` is what makes a text element's `size` mean what the
+   renderer means by it: `size` is a fraction of canvas *height*, and `1cqh` is
+   one percent of this box's own height. So a headline set at 0.075 is 7.5% of
+   the frame at every breakpoint, with no resize listener and no pixel state in
+   React that could drift from the spec.
+
+   The canvas stays visually quiet: one rule, one shadow, no grid, no chrome.
+   The campaign asset is the thing being looked at.
+   ========================================================================== */
+
+.compose-canvas {
+  container-type: size;
+}
+
+/* Selection and validation state settle rather than snap. Position is not
+   animated: a dragged element must track the pointer exactly, and a transition
+   on `left`/`top` would make it lag behind the cursor. */
+.compose-canvas [role='button'] {
+  transition:
+    outline-color var(--motion-fast) var(--ease-out),
+    opacity var(--motion-fast) var(--ease-out);
+}
+
+/* The final asset arriving is the moment the whole pipeline has been working
+   towards, so it gets the one deliberate flourish on this screen. */
+.final-asset-reveal {
+  animation: final-asset var(--motion-slow) var(--ease-out) backwards;
+}
+
+@keyframes final-asset {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compose-canvas [role='button'] {
+    transition: none;
+  }
+  .final-asset-reveal {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

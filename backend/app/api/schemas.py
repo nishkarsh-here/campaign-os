@@ -88,7 +88,17 @@ class ProjectPage(DomainModel):
 class HealthResponse(DomainModel):
     status: str
     database: str
+    #: Which vendor each seam is configured to use. A name, not a claim — what
+    #: was asked for. `provider_status` says what was actually built.
     providers: dict[str, str]
+    #: Per seam: `ok` when the adapter constructed, `unavailable` when the
+    #: selected name has no implementation in this build. Reported separately
+    #: because this endpoint used to echo `providers` alone and answer `ok`,
+    #: which made a name in an environment variable look like a working
+    #: integration (audit findings DOC-5 / BG-8). Construction is offline, so
+    #: `ok` means the adapter exists and is configured — never that the vendor
+    #: is reachable.
+    provider_status: dict[str, str] = Field(default_factory=dict)
     #: True when this instance declares itself a demonstration: every provider
     #: is mock and nothing reaches an external service. Surfaced so the
     #: interface can say so rather than leaving a viewer to guess whether what
@@ -150,6 +160,10 @@ class UpdateBrandRequest(DomainModel):
 
 class BrandList(DomainModel):
     items: list[BrandProfile]
+    #: `null` on the last page. Added when the organization-level lists stopped
+    #: returning every row (audit findings DOC-2/BG-6, PERF-1); a client that
+    #: ignores it still reads `items` exactly as before.
+    next_cursor: str | None = None
 
 
 class BrandDocumentSummary(DomainModel):
@@ -272,6 +286,8 @@ class CampaignSummary(DomainModel):
 
 class CampaignList(DomainModel):
     items: list[CampaignSummary]
+    #: `null` on the last page. See `BrandList.next_cursor`.
+    next_cursor: str | None = None
 
 
 class AnswerRequest(DomainModel):

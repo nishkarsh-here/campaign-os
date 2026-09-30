@@ -29,6 +29,20 @@ from scripts.seed_benchmark import ORG_SLUG_PREFIX, build_company, drop
 pytestmark = pytest.mark.integration
 
 
+async def _brands(session, organization_id):
+    """Every brand in the organization.
+
+    The repositories page now (audit finding PERF-1), and these assertions are
+    about containment rather than about paging: a benchmark organization holds
+    one brand and three campaigns, so one page over the limit is all of them.
+    """
+    return (await BrandRepository(session, organization_id).list_page(limit=100)).items
+
+
+async def _campaigns(session, organization_id):
+    return (await CampaignRepository(session, organization_id).list_page(limit=100)).items
+
+
 @pytest.fixture
 async def seeded(session, workspace):
     """All three companies, built through the real seeder."""
@@ -59,8 +73,8 @@ class TestItSeeds:
     async def test_every_company_has_one_brand_and_three_campaigns(self, session, seeded) -> None:
         for company in COMPANIES:
             organization_id = seeded[company.slug]
-            brands = await BrandRepository(session, organization_id).list_all()
-            campaigns = await CampaignRepository(session, organization_id).list_all()
+            brands = await _brands(session, organization_id)
+            campaigns = await _campaigns(session, organization_id)
             assert len(brands) == 1, company.slug
             assert brands[0].name == company.brand.name
             assert len(campaigns) == 3, company.slug
@@ -69,7 +83,7 @@ class TestItSeeds:
         self, session, seeded
     ) -> None:
         organization_id = seeded["nila-living"]
-        campaigns = await CampaignRepository(session, organization_id).list_all()
+        campaigns = await _campaigns(session, organization_id)
         specs = CampaignSpecificationRepository(session, organization_id)
 
         for campaign in campaigns:
@@ -84,7 +98,7 @@ class TestItSeeds:
         self, session, seeded
     ) -> None:
         organization_id = seeded["aarohan-foods"]
-        campaigns = await CampaignRepository(session, organization_id).list_all()
+        campaigns = await _campaigns(session, organization_id)
         creative = CreativeSpecificationRepository(session, organization_id)
 
         for campaign in campaigns:
@@ -109,12 +123,12 @@ class TestItSeeds:
         from app.errors import Conflict
 
         company = next(c for c in COMPANIES if c.slug == "mitti-and-bean")
-        before = len(await CampaignRepository(session, seeded[company.slug]).list_all())
+        before = len(await _campaigns(session, seeded[company.slug]))
 
         with pytest.raises(Conflict, match="already exists"):
             await build_company(session, company, workspace.user.id)
 
-        after = len(await CampaignRepository(session, seeded[company.slug]).list_all())
+        after = len(await _campaigns(session, seeded[company.slug]))
         assert after == before, "a refused re-seed must leave the row count alone"
 
     async def test_the_script_guard_reports_existing_data(self, session, seeded) -> None:
@@ -128,7 +142,7 @@ class TestOrganizationIsolation:
         """The core tenancy claim, tested through the scoped repository."""
         for company in COMPANIES:
             mine = seeded[company.slug]
-            visible = {b.name for b in await BrandRepository(session, mine).list_all()}
+            visible = {b.name for b in await _brands(session, mine)}
             assert visible == {company.brand.name}, (
                 f"{company.slug} can see brands that are not its own: {visible}"
             )
@@ -136,10 +150,7 @@ class TestOrganizationIsolation:
     async def test_no_company_can_read_another_companys_campaigns(self, session, seeded) -> None:
         expected = {c.slug: {e.brief.title for e in c.campaigns} for c in COMPANIES}
         for company in COMPANIES:
-            visible = {
-                row.title
-                for row in await CampaignRepository(session, seeded[company.slug]).list_all()
-            }
+            visible = {row.title for row in await _campaigns(session, seeded[company.slug])}
             assert visible == expected[company.slug]
             for other in COMPANIES:
                 if other.slug != company.slug:
@@ -153,7 +164,7 @@ class TestOrganizationIsolation:
         """Scope is checked on read, not only on list."""
         mitti = seeded["mitti-and-bean"]
         aarohan = seeded["aarohan-foods"]
-        theirs = (await CampaignRepository(session, aarohan).list_all())[0]
+        theirs = (await _campaigns(session, aarohan))[0]
 
         as_mitti = CampaignRepository(session, mitti)
         assert await as_mitti.get(theirs.id) is None
@@ -163,7 +174,7 @@ class TestOrganizationIsolation:
     ) -> None:
         nila = seeded["nila-living"]
         aarohan = seeded["aarohan-foods"]
-        theirs = (await CampaignRepository(session, aarohan).list_all())[0]
+        theirs = (await _campaigns(session, aarohan))[0]
 
         as_nila = CreativeSpecificationRepository(session, nila)
         assert await as_nila.latest(theirs.id) is None, (
@@ -172,8 +183,8 @@ class TestOrganizationIsolation:
 
     async def test_an_unrelated_organization_id_sees_nothing_at_all(self, session, seeded) -> None:
         stranger = uuid.uuid4()
-        assert await BrandRepository(session, stranger).list_all() == []
-        assert await CampaignRepository(session, stranger).list_all() == []
+        assert await _brands(session, stranger) == []
+        assert await _campaigns(session, stranger) == []
 
 
 class TestNoCrossLocationContamination:
@@ -186,7 +197,7 @@ class TestNoCrossLocationContamination:
         cities = {c.slug: c.market.city for c in COMPANIES}
         for company in COMPANIES:
             organization_id = seeded[company.slug]
-            campaigns = await CampaignRepository(session, organization_id).list_all()
+            campaigns = await _campaigns(session, organization_id)
             specs = CampaignSpecificationRepository(session, organization_id)
 
             foreign = [cities[s] for s in cities if s != company.slug]

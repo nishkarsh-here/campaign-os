@@ -29,6 +29,7 @@ from app.db.models import (
 from app.domain.brand import DocumentStatus
 from app.errors import Conflict
 from app.repositories.base import OrganizationOwnedRepository
+from app.repositories.pagination import DEFAULT_LIMIT, Page, keyset_page
 
 
 class BrandRepository(OrganizationOwnedRepository[BrandProfileRow]):
@@ -38,9 +39,20 @@ class BrandRepository(OrganizationOwnedRepository[BrandProfileRow]):
         """Organization scope plus soft-delete, exactly as projects do."""
         return super()._scope(stmt).where(BrandProfileRow.deleted_at.is_(None))
 
-    async def list_all(self) -> list[BrandProfileRow]:
-        stmt = self.scoped().order_by(BrandProfileRow.name)
-        return list((await self.session.execute(stmt)).scalars().all())
+    async def list_page(
+        self, *, limit: int = DEFAULT_LIMIT, cursor: str | None = None
+    ) -> Page[BrandProfileRow]:
+        """One page, still alphabetical.
+
+        This was `list_all()`, which returned every brand in the organization
+        (audit finding PERF-1). Campaign-scoped lists are bounded by one
+        campaign's work; an organization's brand list grows with the tenant, so
+        it is paged. Keyed on `(name, id)` so the order the screen already had
+        is the order the cursor walks.
+        """
+        return await keyset_page(
+            self.session, self.scoped(), BrandProfileRow, key="name", limit=limit, cursor=cursor
+        )
 
     async def create(
         self, *, name: str, payload: dict[str, Any], created_by: uuid.UUID | None

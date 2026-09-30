@@ -21,6 +21,37 @@ os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
 
 import pytest  # noqa: E402
 
+
+def production_settings(**overrides: object):
+    """A `Settings` that `APP_ENV=production` actually accepts.
+
+    Production refuses more than missing credentials: a database URL still on
+    localhost, wildcard or plaintext CORS, and `DEMO_MODE` are each a deploy
+    that comes up looking healthy (`Settings._refuse_unsafe_production`). Tests
+    about *one* production guard were building the rest by default and tripping
+    over the others, so the shape lives here once.
+
+    Nothing reaches a network: the hosts are fictional and every provider is
+    mock.
+    """
+    from app.config import Settings
+
+    base: dict[str, object] = {
+        "app_env": "production",
+        "database_url": "postgresql+asyncpg://user@db.example.com:5432/campaign_os",
+        "database_url_sync": "postgresql://user@db.example.com:5432/campaign_os",
+        "cors_origins": "https://app.example.com",
+        "media_url_secret": "test-signing-key",
+        "llm_provider": "mock",
+        "image_provider": "mock",
+        "embedding_provider": "mock",
+        "storage_provider": "local",
+        "search_provider": "none",
+    }
+    base.update(overrides)
+    return Settings(**base)  # type: ignore[arg-type]
+
+
 from app.domain import (  # noqa: E402
     BrandColor,
     BrandProfile,

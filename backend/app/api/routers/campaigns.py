@@ -11,9 +11,16 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
 from fastapi.responses import Response
 
+from app.api.authz import (
+    ApproveDep,
+    Capability,
+    EditCampaignDep,
+    RequestRevisionDep,
+    authorize,
+)
 from app.api.deps import (
     EmbeddingsDep,
     EvaluationRunnerDep,
@@ -84,6 +91,7 @@ from app.db.models import (
     SpecificationRevisionRow,
 )
 from app.db.session import sessionmaker_for
+from app.domain.approval import Decision
 from app.domain.campaign import CampaignBrief
 from app.domain.common import Channel, JobStatus
 from app.domain.creative import CreativeSpecification
@@ -102,6 +110,7 @@ from app.repositories.campaigns import (
 )
 from app.repositories.evaluation import CreativeEvaluationRepository
 from app.repositories.generation import GeneratedAssetRepository
+from app.repositories.pagination import DEFAULT_LIMIT, MAX_LIMIT
 from app.services.campaigns import CampaignDiscoveryService, DiscoveryTurn
 from app.services.creative_context import CreativeContextService
 from app.services.creative_stage import CreativeStageService, CreativeTurn
@@ -227,16 +236,25 @@ async def list_campaigns(
     llm: LLMDep,
     embeddings: EmbeddingsDep,
     brand_id: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    cursor: str | None = Query(default=None),
 ) -> CampaignList:
+    """One page, newest first. `?limit=&cursor=` as API_SPEC §Lists describes.
+
+    Paged rather than whole (audit finding PERF-1): this is the organization
+    list that grows without limit for a real tenant.
+    """
     service = _service(principal, session, settings, llm, embeddings)
-    rows = await service.campaigns.list_all(brand_id=_uuid(brand_id, "Brand") if brand_id else None)
-    return CampaignList(items=[_summary(r) for r in rows])
+    page = await service.campaigns.list_page(
+        brand_id=_uuid(brand_id, "Brand") if brand_id else None, limit=limit, cursor=cursor
+    )
+    return CampaignList(items=[_summary(r) for r in page.items], next_cursor=page.next_cursor)
 
 
 @router.post("", response_model=CampaignSummary, status_code=status.HTTP_201_CREATED)
 async def create_campaign(
     body: CreateCampaignRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -268,7 +286,7 @@ async def get_campaign(
 @router.post("/{campaign_id}/discovery/start", response_model=DiscoveryTurnResponse)
 async def start_discovery(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -287,7 +305,7 @@ async def start_discovery(
 async def answer_question(
     campaign_id: str,
     body: AnswerRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -346,7 +364,7 @@ async def get_specification(
 async def update_specification(
     campaign_id: str,
     body: UpdateSpecificationRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -362,7 +380,7 @@ async def update_specification(
 @router.post("/{campaign_id}/specification/confirm", response_model=CampaignBrief)
 async def confirm_specification(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -399,7 +417,7 @@ async def list_references(
 )
 async def upload_reference(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -481,7 +499,7 @@ async def get_reference_content(
 async def reanalyze_reference(
     campaign_id: str,
     reference_id: str,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -512,7 +530,7 @@ async def reanalyze_reference(
 async def accept_reference_analysis(
     campaign_id: str,
     reference_id: str,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -584,7 +602,7 @@ async def get_preferences(
 async def set_preferences(
     campaign_id: str,
     body: SetPreferencesRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: StorageDep,
@@ -652,6 +670,20 @@ async def get_creative_context(
 
 
 # --------------------------------------------------------------- creative stage
+def _gate_capability(decision: Decision) -> Capability:
+    """Which right a gate decision needs, from the decision itself.
+
+    One endpoint per gate, two rights. Approving and rejecting are the gate
+    closing on the work; asking for changes is sending it back. A designer may
+    do the second and not the first — that separation is why the gates exist,
+    so a single route-level capability would either hand a designer the
+    approval or take away the revision request.
+    """
+    if decision in (Decision.APPROVE, Decision.REJECT, Decision.SELECT):
+        return Capability.APPROVE
+    return Capability.REQUEST_REVISION
+
+
 def _creative(
     principal: PrincipalDep,
     session: SessionDep,
@@ -697,7 +729,7 @@ async def get_creative_stage(
 @router.post("/{campaign_id}/creative/start", response_model=CreativeStageView)
 async def start_creative_stage(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -725,6 +757,7 @@ async def decide_strategy(
     storage: StorageDep,
 ) -> CreativeStageView:
     """Gate 1 — approve a direction, reject the set, or request changes."""
+    authorize(principal, _gate_capability(body.decision))
     service = _creative(principal, session, settings, llm, embeddings, storage)
     return _creative_view(
         await service.decide_strategy(
@@ -740,7 +773,7 @@ async def decide_strategy(
 async def edit_creative_specification(
     campaign_id: str,
     body: UpdateCreativeSpecificationRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -770,6 +803,7 @@ async def decide_specification(
     Milestone 5 stops here. Nothing is generated on approval; Milestone 6
     picks the approved specification up from the database.
     """
+    authorize(principal, _gate_capability(body.decision))
     service = _creative(principal, session, settings, llm, embeddings, storage)
     return _creative_view(
         await service.decide_specification(
@@ -882,7 +916,7 @@ async def get_generation(
 @router.post("/{campaign_id}/generation/compile", response_model=GenerationView)
 async def compile_prompts(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -906,7 +940,7 @@ async def start_generation(
     campaign_id: str,
     background: BackgroundTasks,
     runner: GenerationRunnerDep,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -959,7 +993,7 @@ async def retry_generation_job(
     job_id: str,
     background: BackgroundTasks,
     runner: GenerationRunnerDep,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -1231,7 +1265,7 @@ async def start_evaluation(
     body: StartEvaluationRequest,
     background: BackgroundTasks,
     runner: EvaluationRunnerDep,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -1282,7 +1316,7 @@ async def retry_evaluation(
     evaluation_id: str,
     background: BackgroundTasks,
     runner: EvaluationRunnerDep,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -1314,7 +1348,7 @@ async def retry_evaluation(
 async def select_creative(
     campaign_id: str,
     body: SelectCreativeRequest,
-    principal: PrincipalDep,
+    principal: ApproveDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -1603,7 +1637,7 @@ async def start_guardian(
     body: StartGuardianRequest,
     background: BackgroundTasks,
     runner: GuardianRunnerDep,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -1649,7 +1683,7 @@ async def retry_guardian(
     result_id: str,
     background: BackgroundTasks,
     runner: GuardianRunnerDep,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -1696,7 +1730,7 @@ async def get_revision(
 async def propose_revision(
     campaign_id: str,
     body: ProposeRevisionRequest,
-    principal: PrincipalDep,
+    principal: RequestRevisionDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -1725,7 +1759,7 @@ async def propose_revision(
 async def edit_revision_delta(
     campaign_id: str,
     body: EditRevisionDeltaRequest,
-    principal: PrincipalDep,
+    principal: RequestRevisionDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -1769,7 +1803,7 @@ def _to_change(item: EditFieldChangeRequest) -> FieldChange:
 @router.post("/{campaign_id}/revision/approve-delta", response_model=RevisionView)
 async def approve_revision_delta(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: ApproveDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -1789,7 +1823,7 @@ async def approve_revision_delta(
 @router.post("/{campaign_id}/revision/approve", response_model=RevisionView)
 async def approve_revised_specification(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: ApproveDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,
@@ -1810,7 +1844,7 @@ async def approve_revised_specification(
 @router.post("/{campaign_id}/revision/reject", response_model=RevisionView)
 async def reject_revision(
     campaign_id: str,
-    principal: PrincipalDep,
+    principal: ApproveDep,
     session: SessionDep,
     settings: SettingsDep,
     llm: LLMDep,

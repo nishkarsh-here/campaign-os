@@ -146,6 +146,7 @@ export function VersionHistory({
                   <ul className="mt-4 flex flex-wrap gap-2">
                     {entry.assets.slice(0, 4).map((asset) => (
                       <li key={asset.id}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={mediaUrl(asset.url)}
                           alt={`Visual from plan v${entry.version}, ${providerLabel(asset.provider)}`}

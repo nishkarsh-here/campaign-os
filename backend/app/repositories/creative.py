@@ -21,6 +21,7 @@ from app.db.models import (
     CreativeSpecificationRow,
 )
 from app.domain.common import utc_now
+from app.errors import Conflict
 from app.repositories.base import OrganizationOwnedRepository
 
 
@@ -52,7 +53,17 @@ class CreativeDirectionSetRepository(OrganizationOwnedRepository[CreativeDirecti
         selected_direction_id: uuid.UUID | None = None,
     ) -> CreativeDirectionSetRow:
         """Idempotent per version: re-projecting the same graph state must not
-        create duplicate rows."""
+        create duplicate rows.
+
+        Idempotent, not overwriting. A version whose gate a human already
+        decided is a record of that decision, so re-projecting *the same* set
+        over it is a no-op and re-projecting a *different* one is refused. The
+        difference matters because the graph re-projects the same state several
+        times as the stage advances, while a second Creative Director run would
+        arrive at the same version number carrying different directions — and
+        silently replacing an approved set is how a click on "Develop creative
+        routes" destroyed the seeded benchmark dataset.
+        """
         stmt = self.scoped().where(
             CreativeDirectionSetRow.campaign_id == campaign_id,
             CreativeDirectionSetRow.version == version,
@@ -66,6 +77,12 @@ class CreativeDirectionSetRepository(OrganizationOwnedRepository[CreativeDirecti
                 payload=payload,
             )
             self.add(row)
+        elif row.approved_at is not None and row.payload != payload:
+            raise Conflict(
+                "These creative routes were already approved and cannot be replaced. "
+                "Ask for a revision instead, which records a new version.",
+                details={"campaign_id": str(campaign_id), "version": version},
+            )
         else:
             row.payload = payload
         if selected_direction_id is not None:
@@ -123,6 +140,15 @@ class CreativeSpecificationRepository(OrganizationOwnedRepository[CreativeSpecif
                 payload=payload,
             )
             self.add(row)
+        elif row.approved_at is not None and row.payload != payload:
+            # Same rule as the direction set above, and the stronger case: this
+            # is the plan generation compiles from, and assets already point at
+            # this version. A change after approval belongs in a new version.
+            raise Conflict(
+                "This creative plan was already approved and cannot be replaced. "
+                "Ask for a revision instead, which records a new version.",
+                details={"campaign_id": str(campaign_id), "version": version},
+            )
         else:
             row.payload = payload
         await self.session.flush()

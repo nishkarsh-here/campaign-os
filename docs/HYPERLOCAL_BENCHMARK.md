@@ -250,6 +250,28 @@ It also stops before generation. Plates, evaluations and Guardian verdicts are
 computed by services from real provider output — seeding them by hand would be
 exactly the fake functionality this project has refused to build since M0.
 
+### The seed writes rows, and that was once invisible
+
+Worth stating, because it cost this dataset its own demo. `seed_benchmark.py`
+writes through the repositories and **never runs the creative graph**, so there
+is no LangGraph checkpoint for any of the nine campaigns. `GET /creative` read
+only the checkpoint, so it reported no directions and no specification for all
+nine while the database held three approved directions and an approved Creative
+Specification each — and the Creative screen the storyline opens at step 3 showed
+"No creative routes yet", offering a button that would have replaced the seeded
+routes with fresh model output (audit findings HL-1 and HL-2).
+
+`seed_demo.py` does not have this shape: it drives `CreativeStageService.start()`
+and therefore leaves a checkpoint, which is why the M10 demo worked throughout
+and this did not.
+
+Both are fixed, and the fix is a read rather than a fake run: the service falls
+back to the application tables when no checkpoint exists, and starting the stage
+on a campaign that already has a direction set reports what is there instead of
+rebuilding it. Nothing was added to the seed, because a seeded graph execution
+would be precisely the invented result this section refuses. See CLAUDE.md
+§9 and `tests/integration/test_creative_row_backed.py`.
+
 ## Demo storyline
 
 Roughly ten minutes, entirely offline.

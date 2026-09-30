@@ -180,12 +180,45 @@ export function NextActionCard({
   const node = nodes.find(
     (n) => n.backing.kind === 'stage' && n.backing.stageKey === overview.next_stage,
   );
+  const state = overview.stages.find((s) => s.key === overview.next_stage)?.state ?? null;
+
+  // Work in flight is not a decision, and neither is a stage waiting behind an
+  // earlier one. Both used to read as "This campaign is complete", because the
+  // backend only nominated a next stage that was PENDING, ATTENTION or FAILED
+  // and a missing one meant finished here (audit finding DH-1). The backend now
+  // nominates the first unfinished stage whatever its state, so this card has
+  // to say which of the four it is rather than assume a person is being asked
+  // for something.
+  if (state === 'RUNNING' || state === 'BLOCKED') {
+    const running = state === 'RUNNING';
+    return (
+      <Card className={running ? 'border-l-2 border-l-info' : 'border-l-2 border-l-line'}>
+        <p className={`text-label uppercase ${running ? 'text-info' : 'text-muted'}`}>
+          {running ? 'In progress' : 'Waiting on an earlier stage'}
+        </p>
+        <p className="mt-2 text-body font-medium">{overview.next_action}</p>
+        {node ? (
+          <Link
+            href={node.href}
+            className={buttonStyles('secondary', 'md', 'mt-4 w-full')}
+          >
+            View {node.label.toLowerCase()}
+          </Link>
+        ) : null}
+      </Card>
+    );
+  }
+
   const gate = isApprovalGate(overview.next_action);
   const permitted = gate ? capabilities.can('approve') : capabilities.can('edit_campaign');
 
   return (
-    <Card className="border-l-2 border-l-accent">
-      <p className="text-label uppercase text-accent">Your next decision</p>
+    <Card className={`border-l-2 ${state === 'FAILED' ? 'border-l-danger' : 'border-l-accent'}`}>
+      <p
+        className={`text-label uppercase ${state === 'FAILED' ? 'text-danger' : 'text-accent'}`}
+      >
+        {state === 'FAILED' ? 'Needs attention' : 'Your next decision'}
+      </p>
       {/* The backend's own sentence. Not paraphrased — paraphrasing is where a
           second, disagreeing description of the truth comes from. */}
       <p className="mt-2 text-body font-medium">{overview.next_action}</p>

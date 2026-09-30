@@ -12,9 +12,14 @@ product made deliberately and whose limits are stated under
 └────────────┘        └────────┬─────────┘        └──────────────────────┘
                                │
                                ▼
-                        object storage
-                     (local disk or Supabase)
+                         local disk volume
+                        (LOCAL_STORAGE_DIR)
 ```
+
+**One frontend, one backend, one database, one volume.** That is the whole
+architecture, and §4 explains why the backend is currently *one* rather than
+several. Nothing here needs a broker, a worker fleet, a cache or object storage,
+and adding any of them would be adding infrastructure the code does not use.
 
 The browser talks only to the API. It never holds a provider key, never reaches
 object storage directly, and never receives a storage key it could dereference.
@@ -54,16 +59,28 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
 ```
 
-A host that injects `$PORT` (Railway, Render, Fly) needs nothing else. Set
-`API_HOST=0.0.0.0` so the process is reachable from outside its container —
-the `127.0.0.1` default is a local-development safety, and is the single most
-common reason a first deploy answers nothing.
+A host that injects `$PORT` (Railway, Render, Fly) needs nothing else.
 
-**Health.** `GET /v1/health` reports process, database and the selected
-providers. It returns `200` with `"status": "degraded"` when the database is
-unreachable rather than failing to respond, so a platform health check
-distinguishes "the process is up and the database is not" from "the process is
-gone".
+**Bind address is a `uvicorn` argument, not a setting.** `--host 0.0.0.0` in the
+command above is what makes the process reachable from outside its container,
+and it is the single most common reason a first deploy answers nothing.
+`API_HOST` and `API_PORT` exist in `Settings` and no code reads them — they
+document the intended local defaults and nothing more, so setting `API_HOST` in
+the environment changes nothing (audit finding P-2). Pass the flags.
+
+**Health.** `GET /v1/health` reports process, database and providers. It returns
+`200` with `"status": "degraded"` rather than failing to respond, so a platform
+health check distinguishes "the process is up and the database is not" from "the
+process is gone".
+
+Providers are reported twice over, because a name and a capability are different
+things. `providers` is what each seam is *configured* for; `provider_status` is
+whether that adapter actually **constructed** — `ok` or `unavailable` — and an
+unavailable one degrades the overall status. This endpoint used to echo the
+configured names alone and answer `ok`, which made `STORAGE_PROVIDER=supabase`
+look like a working integration. Construction is offline, so `ok` means the
+adapter exists and is configured; whether the vendor is reachable is only ever
+proved by calling it.
 
 **Startup is defensive on purpose.** A missing database does not stop the
 process from booting; `/health` reports it. A container that exits during boot
@@ -75,23 +92,64 @@ tells an operator far less than one that starts and says what is wrong.
 cd frontend
 npm ci
 API_BASE_URL=https://api.example.com npm run build
-npm run start      # or deploy the build to Vercel
+npm run start      # or deploy the build to a static/Node host
 ```
 
-`API_BASE_URL` is the only thing the frontend needs, and it is read at build
-time. It must be an origin the **browser** can reach — not an internal service
-name — because every API call and every image `src` is made by the browser.
+**`API_BASE_URL` is required at build time, and the build refuses without it.**
+`next build` substitutes the value into the client JavaScript, so it is fixed
+when the artefact is made and no runtime environment variable can correct it
+afterwards. It must be an origin the **browser** can reach — not an internal
+service name, not a container name — because every API call and every image
+`src` is made by the browser.
 
-No `NEXT_PUBLIC_*` variable exists in this project, and none should be added:
-the frontend has no secrets because it talks to nothing but our API.
+It used to fall back to `http://127.0.0.1:8000`, which produced a site that
+built cleanly, loaded perfectly and could reach nothing: the browser resolves
+that against the *visitor's* machine. `next.config.mjs` now throws instead, and
+also refuses a loopback origin unless `ALLOW_LOOPBACK_API_BASE_URL=true` says
+the build really is a local smoke test. `src/lib/build-config.test.ts` asserts
+both refusals.
+
+**With Supabase auth, the frontend needs two more at build time** —
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` — because the browser signs in against
+Supabase directly and only then calls our API with the resulting token. They are
+deliberately *not* required by the build: without them `isSupabaseConfigured()`
+is false and the sign-in screen explains itself rather than showing a form that
+cannot work, which is what keeps the offline demo buildable. **If you deploy the
+backend with `AUTH_PROVIDER=supabase` and build the frontend without these two,
+nobody can sign in** and the screen will say so.
+
+No `NEXT_PUBLIC_*` variable exists in this project, and none should be added.
+The anon key is publishable by design; `SUPABASE_SERVICE_ROLE_KEY` is
+server-side only and `next.config.mjs` does not expose it — asserted by a test.
 
 ## 4. Storage
 
-`STORAGE_PROVIDER=local` writes to `LOCAL_STORAGE_DIR`. That is correct for a
-single instance with a persistent volume, and **wrong for more than one** —
-instance A cannot serve an asset instance B wrote. Behind more than one API
-instance use `STORAGE_PROVIDER=supabase` with a bucket, or give every instance
-the same network volume.
+`STORAGE_PROVIDER=local` writes to `LOCAL_STORAGE_DIR`, and **`local` is the
+only storage provider this build has** (§5). That is correct for a single
+instance with a persistent volume, and **wrong for more than one** — instance A
+cannot serve an asset instance B wrote.
+
+### The deployment constraint, plainly
+
+**Run exactly one backend instance, unless every instance mounts the same
+filesystem.** Uploaded brand documents, generated plates and rendered final
+assets are files on that volume, and the byte-serving routes read them from the
+instance that receives the request. With two instances and separate disks, an
+asset uploaded through one is a 404 through the other — intermittently, which
+is the worst way to find out.
+
+So the first deployment is **one backend instance with a persistent volume**.
+Two further points follow from the same fact:
+
+* the volume must survive restarts and redeploys. A container filesystem that
+  resets on deploy loses every uploaded document and rendered asset;
+* horizontal scaling is not available until either a shared network volume is
+  attached to every instance, or object storage is built behind the existing
+  `StorageProvider` Protocol.
+
+`STORAGE_PROVIDER=supabase` is that Protocol seam and has **no adapter in this
+build** — the process refuses to start on it. It is where object storage would
+slot in, not an option you can select today.
 
 Storage keys are generated, never derived from a filename, and always carry the
 organization and campaign as a prefix. Nothing serves a key taken from a
@@ -114,7 +172,13 @@ integrations, and selecting one fails at startup.
 | `STORAGE_PROVIDER` | `local` | `supabase` |
 | `SEARCH_PROVIDER` | `none` | `tavily` |
 
-Selecting a provider without its credential **fails at startup**, not at the
+**Every one of the five seams is constructed at startup**, so selecting a name
+with no adapter is a boot failure naming the variable, not a 500 at the first
+upload. Until the M11 audit that was true only of the reasoning and embedding
+providers; storage, image and search were built per request, so a bad
+`STORAGE_PROVIDER` booted cleanly and failed on the first brand document.
+
+Selecting a provider without its credential **fails at startup** too, not at the
 first user request — a missing key is a configuration mistake, and discovering
 it three minutes into a demo is the worst possible time. So does a blank model
 id. Whether an id names a model that *exists* can only be answered by the
@@ -218,6 +282,51 @@ provisioned with a placeholder.
 > `APP_ENV=production` is proven to construct. It has **not** been run against
 > a real Supabase project. Treat the first deploy as the verification step.
 
+### Connecting to a real Supabase project — the exact steps
+
+Nothing below invents a credential. Every value is one you read out of your own
+project, and none of them belongs in the repository.
+
+1. **Create the project** at supabase.com. Any region; it hosts Auth only in
+   this deployment, and may host Postgres as well if you want one vendor.
+2. **Read the two public values** from *Project Settings → API*: the **Project
+   URL** (`https://<ref>.supabase.co`) → `SUPABASE_URL`, and the **anon /
+   publishable key** → `SUPABASE_ANON_KEY`. Both are safe in the browser bundle.
+   Do **not** take the `service_role` key for either: the auth provider never
+   sends it, and this deployment has no storage that needs it.
+3. **Enable the sign-in method** under *Authentication → Providers*. The
+   frontend implements email-and-password
+   (`POST /auth/v1/token?grant_type=password`, `src/lib/session.ts`), so enable
+   **Email**. If you turn on *Confirm email*, an unconfirmed account cannot sign
+   in — create the first user with confirmation already completed, or disable it
+   for the first deploy.
+4. **Set the redirect/site URL** under *Authentication → URL Configuration* to
+   the frontend origin. This build signs in through the token endpoint rather
+   than a redirect flow, so it matters only if you later enable a provider that
+   redirects — set it correctly now rather than debugging it then.
+5. **Create the first user** in *Authentication → Users → Add user*. There is no
+   self-service sign-up screen in this build.
+6. **Give that user an organization.** This is the step most easily missed:
+   Supabase authenticates the person, and this application decides what they can
+   see. A user with no membership gets `403 "You do not belong to any
+   organization yet."` — correct, and confusing if you were not expecting it.
+   The first organization is created by the signed-in user themselves via
+   `POST /v1/organizations`, which is the one route with no organization scope
+   and makes its creator an `admin`.
+7. **Configure the backend**: `AUTH_PROVIDER=supabase`, `SUPABASE_URL`,
+   `SUPABASE_ANON_KEY`. A missing one is a startup failure.
+8. **Build the frontend with the same two values**, because the browser signs in
+   against Supabase directly. A backend on Supabase auth plus a frontend built
+   without them means nobody can sign in.
+9. **Verify with a real sign-in** before believing any of it works. Until a
+   person has signed in against the real project, the correct statement is that
+   this path is implemented and offline-tested, not that it works.
+
+**Identity binds on the subject.** If you delete and recreate a Supabase user
+with the same email, they are a *different person* to this application and will
+have no memberships — that is the M1_SECURITY_AUDIT §A-1 rule working, not a
+bug.
+
 ### Serving media to a browser — `MEDIA_URL_SECRET`
 
 Neither header above reaches an `<img src>`: a browser cannot set
@@ -262,20 +371,96 @@ APP_ENV=production
 DATABASE_URL=postgresql+asyncpg://…
 DATABASE_URL_SYNC=postgresql://…
 CORS_ORIGINS=https://app.example.com
-API_HOST=0.0.0.0
 AUTH_PROVIDER=supabase
+SUPABASE_URL=…
+# Both keys are required by AUTH_PROVIDER=supabase. The anon key verifies the
+# caller's own token; the service-role key is for storage and stays server-side.
+SUPABASE_ANON_KEY=…
+SUPABASE_SERVICE_ROLE_KEY=…
 # Shared by every instance. The app refuses to start without it in production.
 MEDIA_URL_SECRET=…
-STORAGE_PROVIDER=supabase
-SUPABASE_URL=…
-SUPABASE_SERVICE_ROLE_KEY=…
+# `local` is the only storage provider in this build (§4, §5). On more than one
+# instance this must be a volume all of them mount.
+STORAGE_PROVIDER=local
+LOCAL_STORAGE_DIR=/var/lib/campaign-os/storage
 LLM_PROVIDER=gemini
 IMAGE_PROVIDER=gemini
 EMBEDDING_PROVIDER=gemini
 GEMINI_API_KEY=…
 ```
 
-## 8. Demonstration deploy
+`tests/test_deployment_startup.py` builds `Settings` from this block and
+constructs every provider it selects, so the list cannot drift back into one
+that does not boot. It was previously two startup failures deep: the anon key
+was missing, and `STORAGE_PROVIDER=supabase` has no adapter.
+
+### Build time or runtime — the distinction that bites
+
+| Variable | Where | Why it matters |
+|---|---|---|
+| `API_BASE_URL` | **frontend, build time** | inlined into the bundle by `next build`. Changing it needs a rebuild, not a restart |
+| `SUPABASE_URL` | **both** | frontend build time *and* backend runtime. The browser signs in directly; the backend verifies the resulting token |
+| `SUPABASE_ANON_KEY` | **both** | same. Publishable by design |
+| everything else | **backend runtime** | read from the environment at process start |
+
+A variable in the wrong column is the most common first-deploy failure: setting
+`API_BASE_URL` on the frontend *host* rather than in its *build* leaves the
+built bundle pointing wherever it was built.
+
+### What production refuses to start on
+
+`APP_ENV=production` rejects configuration that is valid everywhere else,
+because each of these produces a deploy that comes up looking healthy:
+
+| Refused | Reason |
+|---|---|
+| `AUTH_PROVIDER=dev_stub` | authenticates **every caller as the same user**. Constructed at startup so this is a boot failure, not a `500` on the first request |
+| `CORS_ORIGINS=*` | with `allow_credentials=True` every browser rejects it anyway, so it fails confusingly rather than safely. Name the origin |
+| `CORS_ORIGINS` empty | `curl` works and no browser can reach the API |
+| `CORS_ORIGINS` over `http://` | a credentialled cross-origin call over plaintext |
+| `DATABASE_URL` at localhost | the deploy never set it |
+| `DEMO_MODE=true` | a demonstration instance is not a production one; it forces mock providers, so real users would be served mock output |
+| missing `MEDIA_URL_SECRET` | per-process keys mean instance A cannot verify instance B's links |
+| any provider with no adapter | `supabase` storage, `leonardo` images, `tavily` search |
+
+All are asserted in `tests/test_deployment_startup.py`.
+
+## 8. First deployment — the recommended configuration
+
+**Real auth, real database, mock model providers.** This is the configuration to
+deploy and verify first, because it exercises every path that can go wrong in
+hosting — sign-in, CORS, signed media, the volume, migrations — while spending
+nothing and depending on no external model API.
+
+```bash
+APP_ENV=production
+DATABASE_URL=postgresql+asyncpg://…
+DATABASE_URL_SYNC=postgresql://…
+CORS_ORIGINS=https://app.example.com
+AUTH_PROVIDER=supabase
+SUPABASE_URL=…
+SUPABASE_ANON_KEY=…
+MEDIA_URL_SECRET=…
+STORAGE_PROVIDER=local
+LOCAL_STORAGE_DIR=/var/lib/campaign-os/storage
+LLM_PROVIDER=mock
+IMAGE_PROVIDER=mock
+EMBEDDING_PROVIDER=mock
+SEARCH_PROVIDER=none
+```
+
+`DEMO_MODE` stays **false**: this is a real production instance that happens to
+use mock model providers, not a declared demonstration. The interface shows no
+demo badge, which is correct — but be aware that generated plates are mock
+output, so do not show them to anyone as model results.
+
+**Going live on real models afterwards** is three variables and a key —
+`LLM_PROVIDER`, `IMAGE_PROVIDER`, `EMBEDDING_PROVIDER` to `gemini` plus
+`GEMINI_API_KEY` — and a restart. Nothing else changes, which is the point of
+the provider abstraction. Do it as a second step, after the hosting itself is
+proven.
+
+## 9. Demonstration deploy
 
 A demo instance is a different thing from a production one and says so:
 
@@ -297,7 +482,100 @@ Seed the canonical campaign after migrating:
 cd backend && uv run python scripts/seed_demo.py --reset
 ```
 
-## 9. What this deployment cannot do
+## 10. Deployment runbook and smoke tests
+
+### Deploy
+
+```bash
+# 1. Database — once, before the API starts. Never from inside the API process:
+#    two instances racing the same migration is the one unrecoverable case.
+cd backend
+DATABASE_URL_SYNC=postgresql://…  uv run alembic upgrade head
+uv run alembic current            # expect: 0010_memberships_user_index (head)
+
+# 2. Backend. --host 0.0.0.0 is what makes it reachable from outside a
+#    container; API_HOST is not read by anything (§2).
+uv sync --no-dev
+uv run uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+
+# 3. Frontend. API_BASE_URL is baked in here and cannot be changed later.
+cd ../frontend
+npm ci
+API_BASE_URL=https://api.example.com \
+  SUPABASE_URL=https://<ref>.supabase.co \
+  SUPABASE_ANON_KEY=… \
+  npm run build
+npm run start
+```
+
+If the backend refuses to start, read the message: it names the variable. That
+is the design — a refusal at boot is cheaper than any of the failures in §7.
+
+### Smoke tests, in order
+
+Stop at the first failure; each one depends on the ones above it.
+
+**Reachability**
+
+1. `curl https://api.example.com/v1/health` → `200`, `"status": "ok"`,
+   `"database": "ok"`, and **`provider_status` all `ok`** — including `auth`.
+   A `degraded` here names the seam that did not construct.
+2. `provider_status.auth` is `ok` and `providers.auth` is `supabase`. If it says
+   `dev_stub` the backend is not in production mode and **every caller is the
+   same user** — stop and fix that before anything else.
+3. Open the frontend. In the browser's network tab, confirm requests go to the
+   API origin and **not** to `localhost` or `127.0.0.1`. A build with the wrong
+   `API_BASE_URL` fails exactly here and nowhere earlier.
+4. No CORS errors in the console. One means `CORS_ORIGINS` does not name the
+   frontend origin **exactly**, scheme and host and port.
+
+**The journey** — sign in, then open each screen and confirm it renders its own
+content rather than an error or a permanent skeleton:
+
+5. sign in · 6. `/app` · 7. organization · 8. project · 9. campaign ·
+10. Discovery · 11. Inspiration · 12. Creative · 13. Generate · 14. Evaluate ·
+15. Guardian · 16. Refine · 17. Compose
+
+**Media and storage**
+
+18. An image loads on a screen that shows one — a reference, a plate or a final
+    asset. A broken image with the link present means `MEDIA_URL_SECRET` differs
+    between instances, or the volume is not the one that was written to.
+19. Download a final asset. This proves the volume is readable and that
+    `download_url` round-trips.
+20. Redeploy the backend, then reload a screen with an image. **If it 404s, the
+    volume is not persistent** — the single most common hosting mistake here,
+    and invisible until the first redeploy.
+
+**Authorization** — needs a second Supabase user, added to the same organization
+with role `viewer`:
+
+21. The viewer can read every screen above.
+22. A viewer mutation is refused with `403` and a message naming the capability.
+    From their session: `POST /v1/projects` with any name.
+23. A **non-member** — a third user with no membership — gets `403 "You do not
+    belong to any organization yet."`, and a request carrying another
+    organization's id gets `404`, never `403`. Existence is not leaked.
+
+**Data**
+
+24. If the benchmark is seeded, open a benchmark campaign's Creative screen: it
+    must show three routes and the approved plan, not "No creative routes yet".
+25. No critical errors in the browser console on any screen.
+
+### What a failure at each stage means
+
+| Fails | Almost always |
+|---|---|
+| 1–2 | backend environment — read the startup log, it names the variable |
+| 3 | frontend built without `API_BASE_URL`, or built before it was set |
+| 4 | `CORS_ORIGINS` missing the exact frontend origin |
+| 5 | frontend built without `SUPABASE_URL` / `SUPABASE_ANON_KEY`, or no user exists |
+| 6–17 | a user with no organization membership (§6 step 6) |
+| 18–20 | storage volume: not shared, not persistent, or more than one instance |
+| 21–23 | roles not assigned in `memberships` |
+
+## 11. What this deployment cannot do
 
 Stated plainly, because a limitation you know about is a trade and one you
 discover is an outage.
@@ -360,7 +638,7 @@ discover is an outage.
   or terminal. There is no percentage, because there is nothing underneath that
   could honestly produce one.
 
-## 10. Upgrades
+## 12. Upgrades
 
 1. `alembic upgrade head` against the new code, before it starts.
 2. Deploy the backend.

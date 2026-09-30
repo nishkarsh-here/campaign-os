@@ -119,14 +119,14 @@ ADR-013 and ADR-014).
 
 | | |
 |---|---|
-| Tests | backend 1,402 passing · frontend 449 passing · ruff clean · mypy strict clean · tsc clean · Next build clean |
+| Tests | backend 1,402 passing · frontend 557 passing · ruff clean · mypy strict clean · tsc clean · Next build clean |
 | Migrations | 001–009, `alembic check` clean |
 | API | 62 routes under `/v1` |
 | Frontend | 13 routes, all four async states on every screen |
 | Providers | **API-only, no local inference.** mock (complete) · Gemini LLM + embeddings **live-verified** · Gemini image (`gemini-3.1-flash-image`) built, live-blocked by tier · local storage. Leonardo, Tavily and Supabase storage are interface seams with no adapter. |
 | Graph | LangGraph with a Postgres checkpointer, resume proved across two processes |
 
-**Honest limitations** are in [§9 of the deployment guide](docs/DEPLOYMENT.md#9-what-this-deployment-cannot-do)
+**Honest limitations** are in [§11 of the deployment guide](docs/DEPLOYMENT.md#11-what-this-deployment-cannot-do)
 and in `M10_FINAL_REPORT.md`. The short version: background work runs in the API
 process and does not survive a restart (it is reconciled into a visible failure
 at startup); local storage does not work behind more than one instance; the
@@ -135,7 +135,7 @@ renderer falls back to a bundled typeface when a brand has not uploaded one;
 fails to import — they are Protocol seams, not adapters, and selecting one
 fails at startup**; and **live Gemini image generation is still unverified**,
 for two independent reasons recorded in
-[§9 of the deployment guide](docs/DEPLOYMENT.md#9-what-this-deployment-cannot-do).
+[§11 of the deployment guide](docs/DEPLOYMENT.md#11-what-this-deployment-cannot-do).
 Reasoning and embeddings *are* live-verified. Mock mode remains the guaranteed
 path.
 
@@ -192,14 +192,26 @@ The walkthrough is scripted in [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 
 ## Production
 
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). In short: run migrations, run
-the API with `AUTH_PROVIDER=supabase` and `APP_ENV=production` (the dev auth
-stub refuses to construct in production), set `SUPABASE_URL` and
-`SUPABASE_ANON_KEY`, point `STORAGE_PROVIDER` at a bucket if you run more than
-one instance, and give the frontend `API_BASE_URL`.
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — §8 has the recommended first
+deployment and §10 the runbook and smoke tests. In short: one frontend, one
+backend, one Postgres, one persistent volume.
 
-Authentication is verified offline against a fake Supabase and has not yet run
-against a real project — the first deploy is the verification step.
+Run migrations first, then the API with `APP_ENV=production` and
+`AUTH_PROVIDER=supabase` plus `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Production
+refuses to start on the dev auth stub, on wildcard or plaintext CORS, on a
+database URL still pointing at localhost, and without `MEDIA_URL_SECRET` — every
+one of those otherwise produces a deploy that looks healthy.
+
+**`local` is the only storage provider in this build**, so run *one* backend
+instance unless every instance mounts the same filesystem, and make sure that
+volume survives redeploys.
+
+Build the frontend with `API_BASE_URL` — it is inlined into the bundle and the
+build refuses without it — plus `SUPABASE_URL` and `SUPABASE_ANON_KEY`, because
+the browser signs in against Supabase directly.
+
+Authentication is verified offline against a fake Supabase and **has not yet run
+against a real project** — the first deploy is the verification step.
 
 ## Read in this order
 

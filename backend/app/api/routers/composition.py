@@ -22,6 +22,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import Response
 
+from app.api.authz import EditCampaignDep
 from app.api.deps import (
     MediaLinkDep,
     PrincipalDep,
@@ -141,7 +142,7 @@ async def get_composition(
 async def compose(
     campaign_id: str,
     body: ComposeRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -167,7 +168,7 @@ async def compose(
 async def add_variant(
     campaign_id: str,
     body: VariantRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -191,7 +192,7 @@ async def add_variant(
 async def edit_composition(
     campaign_id: str,
     body: LayoutEditRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -225,7 +226,7 @@ async def edit_composition(
 async def render_composition(
     campaign_id: str,
     body: RenderRequest,
-    principal: PrincipalDep,
+    principal: EditCampaignDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,

@@ -23,6 +23,7 @@ from app.api.media_links import (
 from app.config import AppEnv, Settings
 from app.domain.common import Role
 from app.domain.workspace import Principal, User
+from tests.conftest import production_settings
 
 ORG = str(uuid.uuid4())
 OTHER_ORG = str(uuid.uuid4())
@@ -241,9 +242,7 @@ class TestConfiguration:
             )
 
     def test_production_starts_with_one(self) -> None:
-        settings = Settings(
-            app_env=AppEnv.PRODUCTION,
-            database_url="postgresql+asyncpg://localhost/test",
+        settings = production_settings(
             auth_provider="supabase",
             supabase_url="https://project.supabase.co",
             supabase_anon_key="anon",

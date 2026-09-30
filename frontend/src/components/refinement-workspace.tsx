@@ -208,6 +208,7 @@ export function RevisionRequest({
       {/* §9 — the thread from the brand review, said out loud. */}
       {attachedAsset ? (
         <div className="arrive mt-4 flex flex-wrap items-center gap-3 rounded-md border border-accent/40 bg-accent/5 p-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={mediaUrl(attachedAsset.url)}
             alt={`The visual this feedback is about, from ${providerLabel(attachedAsset.provider)}`}

@@ -280,6 +280,9 @@ class Settings(BaseSettings):
         if missing:
             raise ValueError("Missing configuration: " + "; ".join(missing))
 
+        if self.app_env is AppEnv.PRODUCTION:
+            self._refuse_unsafe_production()
+
         # A demo instance must be self-contained. The whole point of the mode
         # is that the demonstration cannot be broken by a dead key, a rate
         # limit or a conference network — so declaring it while pointing at a
@@ -315,6 +318,53 @@ class Settings(BaseSettings):
             if live:
                 raise ValueError("APP_ENV=test requires mock providers; got " + ", ".join(live))
         return self
+
+    def _refuse_unsafe_production(self) -> None:
+        """Settings that are fine anywhere else and wrong under `APP_ENV=production`.
+
+        Separate from the missing-credential list above because these are not
+        absences — every one of them is a value that was supplied, is valid, and
+        means something dangerous or self-contradictory in production. A deploy
+        that comes up on any of them looks healthy, which is the problem.
+        """
+        wrong: list[str] = []
+
+        # `*` with `allow_credentials=True` is rejected by every browser, so it
+        # does not even do the unsafe thing it looks like it does — it fails
+        # confusingly instead. Empty is the opposite mistake and just as silent:
+        # the API answers `curl` perfectly and no browser can reach it.
+        origins = self.cors_origin_list
+        if not origins:
+            wrong.append("CORS_ORIGINS is empty, so no browser origin may call this API")
+        elif "*" in origins:
+            wrong.append(
+                "CORS_ORIGINS=* is refused in production. Name the frontend origin, "
+                "e.g. https://app.example.com"
+            )
+        else:
+            insecure = [o for o in origins if o.startswith("http://")]
+            if insecure:
+                wrong.append("CORS_ORIGINS must be https in production; got " + ", ".join(insecure))
+
+        # A default database URL in production points at a database that is not
+        # there — or, worse, at one that is. Either way the deploy did not set it.
+        for name, url in (
+            ("DATABASE_URL", self.database_url),
+            ("DATABASE_URL_SYNC", self.database_url_sync),
+        ):
+            host = url.split("://", 1)[-1]
+            if "localhost" in host or "127.0.0.1" in host:
+                wrong.append(f"{name} still points at localhost")
+
+        # Two different declarations. DEMO_MODE forces mock providers so a
+        # demonstration cannot be broken by a network — which means a
+        # "production" instance in demo mode serves mock output to real users
+        # while reporting itself as production.
+        if self.demo_mode:
+            wrong.append("DEMO_MODE=true is a demonstration instance, not a production one")
+
+        if wrong:
+            raise ValueError("Unsafe for APP_ENV=production: " + "; ".join(wrong))
 
 
 @lru_cache

@@ -37,6 +37,22 @@ uv run pytest -m e2e          # the full campaign walk
 ### Unit (`-m unit`) — no I/O
 - **Domain schemas** — required fields, validators, enum bounds, round-trip
   `model_dump`/`model_validate`, rejection of malformed payloads.
+- **Documents asserted against the code they describe.** Three now, each because
+  the document had drifted and nothing failed: `.env.example` against `Settings`
+  both ways (`test_config.py`), `docs/API_SPEC.md` against the OpenAPI schema
+  both ways plus its error-code table against every emittable code
+  (`test_api_spec_matches_routes.py`), and the environment block in
+  `docs/DEPLOYMENT.md` §7 *executed* — `Settings` is built from it and every
+  provider it names is constructed (`test_deployment_startup.py`). A prose claim
+  that can be checked should be.
+- **The authorization matrix** (`test_authz.py`) — every role against every
+  capability, written out as a table so a change to `MATRIX` has to be deliberate
+  here too; that the frontend mirror agrees; and **coverage**: the routers are
+  read and any mutating route still reachable with a bare `Principal` fails.
+- **Which stage the command centre nominates as next**
+  (`test_overview_next_stage.py`) — a pure function over the stage list, so every
+  combination that matters is stated rather than seeded. `None` may only mean
+  every stage is finished.
 - **State** — reducers append rather than replace; partial updates merge; state
   stays JSON-serializable (a checkpointing requirement, so it is asserted).
 - **Node contracts** — `tests/test_node_contracts.py` walks `NODE_CONTRACTS` and
@@ -122,6 +138,24 @@ transaction.
   different headlines into three distinct files
 - provider failure injection: an image provider that always fails must produce
   `FAILED` jobs, a surviving run, and a visible reason
+- **role enforcement over HTTP** (`test_role_enforcement.py`): one user with one
+  membership per role, every capability's representative route, asserted both
+  ways. The permitted case asserts "not 403" because the guard is a dependency
+  and runs before any row is looked up — so a permitted caller on an absent
+  campaign is a `404`, which proves the guard let them past without seeding a
+  whole campaign per row of the table. One route is run to completion so the
+  guard is shown to let real work through, and a role is asserted not to cross
+  organizations
+- **a creative stage that exists in rows but not in a checkpoint**
+  (`test_creative_row_backed.py`): the shape `seed_benchmark.py` produces. The
+  seeded directions and plan are read back, no gate is invented, starting the
+  stage changes nothing, and the repository refuses to replace an approved
+  payload — while a campaign *with* a checkpoint still parks on Gate 1, which is
+  the boundary between the two paths
+- **keyset pagination** (`test_pagination.py`): walking the pages yields every
+  row exactly once, each list keeps the order its screen already had, a row
+  inserted mid-walk cannot hide another (the failure offset pagination has), and
+  a cursor from another list is refused rather than becoming a 500
 
 ### End-to-end (`-m e2e`)
 One test walks the target demo:

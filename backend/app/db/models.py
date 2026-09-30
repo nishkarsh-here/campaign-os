@@ -91,6 +91,12 @@ class Membership(Timestamps, Entity):
     __tablename__ = "memberships"
     __table_args__ = (
         UniqueConstraint("organization_id", "user_id"),
+        # `GET /me` — which every screen calls — lists a user's memberships by
+        # `user_id` alone. The unique constraint above indexes
+        # `(organization_id, user_id)`, whose leading column is the wrong one, so
+        # that query scanned the table (audit finding PERF-2). Resolving the
+        # request principal filters on both columns and could already use it.
+        Index("ix_memberships_user_id", "user_id"),
         CheckConstraint(
             "role in ('admin','brand_manager','marketing','designer','viewer')",
             name="role_valid",

@@ -516,3 +516,113 @@ describe('Campaigns using this brand', () => {
     expect(screen.queryByText('0 campaigns')).toBeNull();
   });
 });
+
+// ------------------------------------------------- DH-1: running is not done
+describe('Next action does not report a running campaign as complete', () => {
+  // Audit finding DH-1. The card read a missing `next_stage` as "complete", and
+  // the backend only nominated a stage that was PENDING, ATTENTION or FAILED —
+  // so a campaign mid-generation announced itself finished, with a link to
+  // final assets that did not exist. The backend now nominates the first
+  // unfinished stage whatever its state, and this card has to distinguish the
+  // four states rather than assume a person is being asked for something.
+  const nodes = resolveJourney('c-1', overview({ stages: [] }));
+
+  function atStage(key: string, state: string, detail: string) {
+    return overview({
+      stages: [{ key, label: key, state, detail } as never],
+      next_stage: key,
+      next_action: detail,
+    });
+  }
+
+  it('reports work in flight as in progress, not as complete', () => {
+    render(
+      <NextActionCard
+        campaignId="c-1"
+        overview={atStage('generation', 'RUNNING', '2 job(s) still running.')}
+        nodes={nodes}
+        capabilities={capabilitiesFor('admin')}
+      />,
+    );
+    expect(screen.getByText('In progress')).toBeDefined();
+    expect(screen.getByText('2 job(s) still running.')).toBeDefined();
+    expect(screen.queryByText('This campaign is complete.')).toBeNull();
+  });
+
+  it('does not call running work a decision the person owes', () => {
+    render(
+      <NextActionCard
+        campaignId="c-1"
+        overview={atStage('generation', 'RUNNING', '2 job(s) still running.')}
+        nodes={nodes}
+        capabilities={capabilitiesFor('admin')}
+      />,
+    );
+    expect(screen.queryByText('Your next decision')).toBeNull();
+  });
+
+  it('offers no "see the final assets" link while none exist', () => {
+    // The specific dead end: the complete branch linked to Compose.
+    render(
+      <NextActionCard
+        campaignId="c-1"
+        overview={atStage('generation', 'RUNNING', '2 job(s) still running.')}
+        nodes={nodes}
+        capabilities={capabilitiesFor('admin')}
+      />,
+    );
+    expect(screen.queryByRole('link', { name: 'See the final assets' })).toBeNull();
+  });
+
+  it('says a blocked stage is waiting on an earlier one', () => {
+    render(
+      <NextActionCard
+        campaignId="c-1"
+        overview={atStage('evaluation', 'BLOCKED', 'Generate creatives first.')}
+        nodes={nodes}
+        capabilities={capabilitiesFor('admin')}
+      />,
+    );
+    expect(screen.getByText('Waiting on an earlier stage')).toBeDefined();
+    expect(screen.queryByText('This campaign is complete.')).toBeNull();
+  });
+
+  it('marks a failed stage as needing attention rather than as a decision', () => {
+    render(
+      <NextActionCard
+        campaignId="c-1"
+        overview={atStage('generation', 'FAILED', 'Two providers failed. Retry them.')}
+        nodes={nodes}
+        capabilities={capabilitiesFor('admin')}
+      />,
+    );
+    expect(screen.getByText('Needs attention')).toBeDefined();
+    expect(screen.getByText('Two providers failed. Retry them.')).toBeDefined();
+  });
+
+  it('still asks for a decision when a stage is genuinely waiting on a person', () => {
+    render(
+      <NextActionCard
+        campaignId="c-1"
+        overview={atStage('creative', 'ATTENTION', 'Approve the creative direction.')}
+        nodes={nodes}
+        capabilities={capabilitiesFor('marketing')}
+      />,
+    );
+    expect(screen.getByText('Your next decision')).toBeDefined();
+  });
+
+  it('still says complete when every stage really is done', () => {
+    render(
+      <NextActionCard
+        campaignId="c-1"
+        overview={overview({
+          stages: [{ key: 'composition', label: 'Final asset', state: 'DONE', detail: '' } as never],
+        })}
+        nodes={nodes}
+        capabilities={capabilitiesFor('admin')}
+      />,
+    );
+    expect(screen.getByText('This campaign is complete.')).toBeDefined();
+  });
+});

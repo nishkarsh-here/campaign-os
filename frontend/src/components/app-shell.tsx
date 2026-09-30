@@ -51,6 +51,7 @@ export function AppShell({
    * because context you have to open is context nobody reads.
    */
   aside,
+  wide = false,
   children,
 }: {
   me: Me | null;
@@ -60,6 +61,15 @@ export function AppShell({
   header?: React.ReactNode;
   bleed?: React.ReactNode;
   aside?: React.ReactNode;
+  /**
+   * Let the content run to the full shell width instead of the 64rem measure.
+   *
+   * For a production workspace rather than a reading surface: Compose lays out
+   * layers, canvas and inspector side by side, and 64rem leaves the canvas —
+   * the thing being judged — a couple of hundred pixels wide. Reading screens
+   * keep the measure, because a 100rem paragraph is unreadable.
+   */
+  wide?: boolean;
   children: React.ReactNode;
 }) {
   const router = useRouter();
@@ -166,7 +176,7 @@ export function AppShell({
           </div>
         ) : (
           <main id="main" className="px-gutter py-8 sm:px-gutter-lg sm:py-10 lg:px-xl">
-            <div className="mx-auto max-w-page">{children}</div>
+            <div className={cx('mx-auto', wide ? 'max-w-[100rem]' : 'max-w-page')}>{children}</div>
           </main>
         )}
       </div>

@@ -10,6 +10,8 @@ the offline demo run without any provider package being importable.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 
 from app.config import Settings, get_settings
@@ -200,3 +202,137 @@ def assert_embedding_dimensions(provider: EmbeddingProvider) -> None:
             f"vectors, but brand_chunks.embedding is vector({EMBEDDING_DIMENSIONS}). "
             "Changing the embedding model requires a migration and a re-embed."
         )
+
+
+# ---------------------------------------------------------------------------
+# Readiness. Audit findings DOC-5 / BG-8.
+# ---------------------------------------------------------------------------
+#
+# `DEPLOYMENT.md` §5 states that selecting a provider this build has no adapter
+# for "fails at startup". That was true of the reasoning and embedding providers,
+# which the lifespan constructs, and false of storage, image and search, which
+# nothing constructed until the first request that needed one. So
+# `STORAGE_PROVIDER=supabase` booted cleanly, `/v1/health` answered `"status":
+# "ok"` with `"storage": "supabase"` — because it echoed the setting — and the
+# failure arrived at the first brand-document upload.
+#
+# A name in a variable is not a capability. Both are fixed here: everything is
+# constructed at startup, and health reports what was constructed rather than
+# what was asked for.
+
+
+@dataclass(frozen=True)
+class ProviderReadiness:
+    """Whether the selected name has an adapter behind it, right now."""
+
+    kind: str
+    name: str
+    built: bool
+    #: The exception type, for an operator. Never the message — a vendor
+    #: message is log-side detail (`ProviderError.__init__`).
+    reason: str | None = None
+
+
+#: Every provider seam, with the factory that proves it. Deliberately a table
+#: rather than five calls: a seam added later that nobody lists here would boot
+#: unverified, which is the defect this fixes.
+def _build_auth(settings: Settings) -> object:
+    """The auth provider, imported here rather than at module scope.
+
+    `app/auth/` is deliberately a different registry answering a different
+    question — "who is this?", never "may they?" (ADR-016) — and that separation
+    stands. It appears in this table anyway because **readiness is a deployment
+    question, not an architectural one**: an operator asking "did this instance
+    come up able to do its job" means all six seams, and splitting the answer
+    across two mechanisms is how one of them comes to be forgotten.
+
+    It matters most here. `DevStubAuthProvider.__init__` refuses to run under
+    `APP_ENV=production` — it authenticates every caller as the same user — and
+    its own docstring says that guard "makes that a startup failure rather than a
+    silent hole". Nothing constructed it at startup, so the process booted,
+    `/v1/health` answered `ok` with `auth: dev_stub`, and the guard fired as a
+    500 on the first authenticated request instead.
+    """
+    from app.auth.registry import build_auth_provider
+
+    return build_auth_provider(settings)
+
+
+_SEAMS: tuple[tuple[str, Callable[[Settings], object]], ...] = (
+    ("llm", build_llm_provider),
+    ("image", build_image_provider),
+    ("embedding", build_embedding_provider),
+    ("storage", build_storage_provider),
+    ("search", build_search_provider),
+    ("auth", _build_auth),
+)
+
+
+#: Exception types that mean "this build has no such adapter", as opposed to
+#: "the adapter exists and could not start".
+_NO_ADAPTER = frozenset({"ModuleNotFoundError", "ImportError", "ProviderNotConfigured"})
+
+
+def _selected(settings: Settings, kind: str) -> str:
+    return str(getattr(settings, f"{kind}_provider"))
+
+
+def provider_readiness(settings: Settings | None = None) -> list[ProviderReadiness]:
+    """Construct every provider and report which ones came up.
+
+    **Nothing here reaches a network.** Constructing an API-backed adapter is an
+    import and an object; it never calls the vendor, so `built` says the adapter
+    exists and is configured, never that the vendor is up. A live credential is
+    only ever proved by using it — the same point ADR-016 makes about tokens and
+    §5 makes about model ids.
+
+    It is not quite free of I/O, and deliberately so: `LocalStorageProvider`
+    creates its root in `__init__`, so an unwritable `LOCAL_STORAGE_DIR` shows up
+    here. That is worth catching at boot rather than at the first upload, for the
+    same reason a missing adapter is.
+    """
+    s = settings or get_settings()
+    statuses: list[ProviderReadiness] = []
+    for kind, factory in _SEAMS:
+        name = _selected(s, kind)
+        try:
+            factory(s)
+        except Exception as exc:  # noqa: BLE001 - reported, never raised here
+            statuses.append(
+                ProviderReadiness(kind=kind, name=name, built=False, reason=type(exc).__name__)
+            )
+        else:
+            statuses.append(ProviderReadiness(kind=kind, name=name, built=True))
+    return statuses
+
+
+def assert_providers_are_built(settings: Settings | None = None) -> None:
+    """Refuse to start when a selected provider has no adapter.
+
+    What §5 already promised. A configuration mistake is worth a container that
+    will not start and says why; discovering it at the first upload — or three
+    minutes into a demo — is the worst possible time.
+    """
+    unavailable = [status for status in provider_readiness(settings) if not status.built]
+    if not unavailable:
+        return
+
+    # Two different mistakes, worth two different sentences. "There is no such
+    # adapter" is answered by picking a name §5 lists; "the adapter exists and
+    # could not start" is answered by fixing what it needs.
+    missing = [s for s in unavailable if s.reason in _NO_ADAPTER]
+    broken = [s for s in unavailable if s.reason not in _NO_ADAPTER]
+    parts: list[str] = []
+    if missing:
+        parts.append(
+            "No adapter in this build for: "
+            + "; ".join(f"{s.kind.upper()}_PROVIDER={s.name}" for s in missing)
+            + ". See docs/DEPLOYMENT.md §5 for what is built."
+        )
+    if broken:
+        parts.append(
+            "Could not initialise: "
+            + "; ".join(f"{s.kind.upper()}_PROVIDER={s.name} ({s.reason})" for s in broken)
+            + "."
+        )
+    raise ProviderNotConfigured(" ".join(parts))

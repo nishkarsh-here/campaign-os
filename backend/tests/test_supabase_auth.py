@@ -26,6 +26,7 @@ from app.auth.supabase import (
     _digest,
 )
 from app.config import AppEnv, Settings
+from tests.conftest import production_settings
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +42,10 @@ USER_PAYLOAD = {
 
 
 def _settings(**overrides) -> Settings:
+    """Supabase auth configured. Most of these build a *development* instance,
+    since the provider does not care about `APP_ENV`; the one test that asks for
+    production gets the rest of production's requirements from
+    `production_settings`."""
     base = {
         "database_url": "postgresql+asyncpg://localhost/test",
         "auth_provider": "supabase",
@@ -50,6 +55,12 @@ def _settings(**overrides) -> Settings:
         # authentication, but these tests construct production settings.
         "media_url_secret": "test-signing-key",
     }
+    if overrides.get("app_env") is AppEnv.PRODUCTION:
+        # `production_settings` supplies the database and CORS values production
+        # insists on; this helper's localhost default would be refused.
+        merged = {**base, **overrides}
+        merged.pop("database_url", None)
+        return production_settings(**merged)
     return Settings(**{**base, **overrides})
 
 
@@ -328,13 +339,8 @@ class TestDevStubIsUntouched:
         assert identity.subject.startswith("dev-stub:")
 
     def test_it_still_refuses_production(self) -> None:
-        settings = Settings(
-            app_env=AppEnv.PRODUCTION,
-            database_url="postgresql+asyncpg://localhost/test",
-            auth_provider="supabase",
-            supabase_url=PROJECT,
-            supabase_anon_key="anon",
-            media_url_secret="test-signing-key",
+        settings = production_settings(
+            auth_provider="supabase", supabase_url=PROJECT, supabase_anon_key="anon"
         )
         with pytest.raises(RuntimeError, match="never run in production"):
             DevStubAuthProvider(settings)

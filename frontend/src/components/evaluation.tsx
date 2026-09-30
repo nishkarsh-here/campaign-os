@@ -14,6 +14,7 @@
 
 import { useState } from 'react';
 import { mediaUrl } from '@/lib/api';
+import { comparisonColumns, comparisonRows } from '@/lib/evaluation';
 import type {
   Disposition,
   EvaluationDetailView,
@@ -28,20 +29,19 @@ function scoreTone(score: number): string {
   return 'text-danger';
 }
 
-/** Scores side by side, so two close creatives can actually be compared. */
+/**
+ * Scores side by side, so two close creatives can actually be compared.
+ *
+ * Alignment is by dimension name, in `lib/evaluation.ts`. It was by array
+ * position, which put one evaluation's score under another's label as soon as
+ * the two scored different dimensions, and invented a `0` where a dimension was
+ * missing (audit finding DH-2). A dimension nobody scored says so.
+ */
 export function ComparisonTable({ view }: { view: EvaluationView }) {
-  const detailFor = new Map(view.evaluations.map((item) => [item.generated_asset_id, item]));
-  // Built as a concrete list rather than filtered, so every column is known to
-  // carry a scored evaluation without asserting it away.
-  const columns: { row: RankedAssetView; detail: EvaluationDetailView }[] = [];
-  for (const row of view.ranked) {
-    const detail = detailFor.get(row.generated_asset_id);
-    if (detail && detail.dimensions.length) columns.push({ row, detail });
-  }
-
-  const first = columns[0];
-  if (columns.length < 2 || !first) return null;
-  const dimensions = first.detail.dimensions;
+  const columns = comparisonColumns(view.ranked, view.evaluations);
+  if (columns.length < 2) return null;
+  const rows = comparisonRows(columns);
+  const anyPartial = rows.some((row) => row.partial);
 
   return (
     <section className="rounded-lg border border-line p-5">
@@ -66,17 +66,27 @@ export function ComparisonTable({ view }: { view: EvaluationView }) {
             </tr>
           </thead>
           <tbody>
-            {dimensions.map((dimension, index) => (
+            {rows.map((dimension) => (
               <tr key={dimension.dimension} className="border-b border-line/50">
                 <td className="py-1.5 text-muted">{dimension.label}</td>
-                {columns.map(({ row, detail }) => {
-                  const score = detail.dimensions[index]?.score ?? 0;
+                {dimension.cells.map((cell, index) => {
+                  const column = columns[index];
+                  if (!column) return null;
                   return (
                     <td
-                      key={row.evaluation_id}
-                      className={`py-1.5 text-right ${scoreTone(score)}`}
+                      key={column.row.evaluation_id}
+                      className={`py-1.5 text-right ${
+                        cell.score === null ? 'text-muted' : scoreTone(cell.score)
+                      }`}
                     >
-                      {score}
+                      {/* Not zero. Zero is a judgement; this is the absence of
+                          one, and the backend renormalises rather than scoring
+                          an unmeasured dimension. */}
+                      {cell.score === null ? (
+                        <span title="This evaluation did not score this dimension">—</span>
+                      ) : (
+                        cell.score
+                      )}
                     </td>
                   );
                 })}
@@ -96,6 +106,13 @@ export function ComparisonTable({ view }: { view: EvaluationView }) {
           </tbody>
         </table>
       </div>
+
+      {anyPartial ? (
+        <p className="mt-3 text-caption text-muted">
+          A dash means that evaluation did not score that dimension. Each overall score is the
+          weighted mean of the dimensions its own evaluation measured, not of the whole table.
+        </p>
+      ) : null}
     </section>
   );
 }

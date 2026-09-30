@@ -21,15 +21,96 @@ express — status semantics, resume behaviour, idempotency.
                "request_id": "01J..." } }
   ```
 
-  Codes: `VALIDATION_FAILED` `UNAUTHENTICATED` `FORBIDDEN` `NOT_FOUND`
-  `CONFLICT` `RATE_LIMITED` `PROVIDER_ERROR` `PROVIDER_UNAVAILABLE`
-  `GRAPH_ERROR` `INTERNAL`. Provider errors surface a user-safe message and
-  keep vendor detail in logs.
-- **Idempotency:** any endpoint that spends money or starts work accepts
-  `Idempotency-Key`. Replaying a key returns the original result.
-- **Lists:** `?limit=&cursor=` -> `{ "items": [...], "next_cursor": null }`.
+  Every code a client can actually receive, and no others — this list used to
+  name two that nothing could emit (`RATE_LIMITED`, `GRAPH_ERROR`) and omit six
+  that it did:
+
+  | Code | When |
+  |---|---|
+  | `VALIDATION_FAILED` | bad input, or a refused edit. The `message` is a sentence to show as-is |
+  | `UNAUTHENTICATED` | no credential, or one the identity provider rejected |
+  | `FORBIDDEN` | a member whose **role** lacks the capability, or no membership at all. `details.required_capability` names what was needed |
+  | `NOT_FOUND` | absent, **or in another organization** — existence is not leaked |
+  | `CONFLICT` | a state that forbids the action: a gate that is not open, a second open revision, retrying a success, replacing approved creative |
+  | `PROVIDER_ERROR` | a vendor failed in a way with no more specific code |
+  | `PROVIDER_UNAVAILABLE` | the vendor is down or unreachable |
+  | `PROVIDER_TIMEOUT` | the vendor did not answer in time |
+  | `PROVIDER_RATE_LIMITED` | the vendor throttled us. **Not** `RATE_LIMITED`: this API does not rate-limit its own callers, so a code implying it would be a fiction |
+  | `PROVIDER_INVALID_RESPONSE` | the vendor answered, and the answer would not validate |
+  | `CONTENT_BLOCKED` | the vendor's safety filter refused. A client has to handle this: it is a normal outcome, not a bug |
+  | `INVALID_STORAGE_KEY` | a malformed key reached the storage layer. Never from a request — no route takes a key (§Files) |
+  | `STORAGE_OBJECT_NOT_FOUND` | the row exists and its bytes do not |
+  | `INTERNAL` | anything unhandled |
+
+  Provider errors surface a user-safe message and keep vendor detail in logs,
+  redacted by shape in `ProviderError.__init__`.
+- **Idempotency:** **derived server-side, not supplied by the client.** There is
+  no `Idempotency-Key` header and none is read; an earlier draft of this document
+  specified one, which no route ever implemented. What exists is stronger.
+  `generation_jobs.idempotency_key` is computed from
+  `(model_prompt, provider, model, attempt)` and is `UNIQUE`, so replaying
+  `POST /generation/start` finds the existing job and charges the provider once
+  — from any client, including one that sends nothing. The attempt number is part
+  of the key, so a *deliberate* retry is allowed where a *replay* is not.
+  `POST /composition` is likewise idempotent per channel, and both creative-gate
+  endpoints refuse a gate that is not open rather than re-running it.
+- **Lists:** the organization-level lists take `?limit=&cursor=` and answer
+  `{ "items": [...], "next_cursor": null }` — `/v1/projects`, `/v1/brands` and
+  `/v1/campaigns`. Keyset on the column each one is already sorted by, so the
+  order a screen has is the order the cursor walks; `limit` defaults to 50 and is
+  capped at 100. **Campaign-scoped lists are not paged** and return every row:
+  references, documents, assets, evaluations, guardian results, revisions and
+  final assets are bounded by one campaign's own work, and a cursor there would
+  be a knob with nothing behind it.
 - **Long work is never awaited in a request.** Mutations that start work return
-  `202` with a run or job resource to poll.
+  `202` with a job resource to poll (§Polling contract).
+
+---
+
+## Authorization
+
+**Enforced on the server.** Until the M11 audit it was not: `memberships.role`
+had five values, `get_principal` resolved one into every `Principal`, and nothing
+read it — so every mutating route accepted a `viewer` exactly as it accepted an
+`admin`, and the interface's hidden controls protected nothing (audit finding
+A-1). `app/api/authz.py` is now the authority and
+`frontend/src/lib/capabilities.ts` is its mirror; a test asserts they agree.
+
+| Capability | Covers |
+|---|---|
+| `edit_campaign` | create and edit campaigns, briefs, references, preferences and creative plans; start generation, evaluation, brand checks, composition and render |
+| `request_revision` | ask for another round — `POST /revision`, `PATCH /revision/delta`, and a `REQUEST_REVISION` or `EDIT` decision at either creative gate |
+| `approve` | pass a gate — `APPROVE`/`REJECT` at either creative gate, `POST /revision/approve`, `/approve-delta`, `/reject`, and `POST /evaluation/select` |
+| `edit_brand` | everything under `/v1/brands` that writes, including accepting an extracted fact |
+| `manage_workspace` | create and change projects |
+
+| Role | Capabilities |
+|---|---|
+| `admin` | all five |
+| `brand_manager` | `edit_campaign` `request_revision` `approve` `edit_brand` |
+| `marketing` | `edit_campaign` `request_revision` `approve` |
+| `designer` | `edit_campaign` `request_revision` |
+| `viewer` | none — reads only |
+
+**A designer cannot approve their own work.** That is the separation the approval
+gates exist to create, and it is why `request_revision` and `approve` are
+different capabilities rather than one "decide".
+
+**Both creative gates check the decision, not the route.** `POST
+/creative/strategy` and `POST /creative/specification/decide` each carry a
+decision that is either an approval or a revision request, so the capability is
+resolved from the body. One route-level check would either hand a designer the
+approval or take away the revision request.
+
+**Reads are not restricted by role.** A `viewer` may read everything in their
+organization; that is what the role is for.
+
+**Authorization narrows tenancy; it never replaces it.** Membership is resolved
+first, and every repository still filters by organization on every read and
+write. So the two refusals mean different things: a **`403`** says the caller
+belongs here and lacks the right — `details.required_capability` names it — and a
+**`404`** says the organization or row is not theirs, because there existence is
+the thing being protected.
 
 ---
 
@@ -37,63 +118,97 @@ express — status semantics, resume behaviour, idempotency.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/v1/me` | principal, orgs, memberships |
-| `GET/POST` | `/v1/organizations` | |
-| `GET/POST` | `/v1/projects` | `?organization_id=` |
-| `GET/PATCH/DELETE` | `/v1/projects/{id}` | delete is soft |
+| `GET` | `/v1/health` | process, database and providers. The only unauthenticated route. See DEPLOYMENT §2 |
+| `GET` | `/v1/me` | principal, orgs, memberships, and the caller's **role** in each |
+| `POST` | `/v1/organizations` | creates one and makes the caller its `admin`. The only route with no organization scope, because it establishes one |
+| `GET` | `/v1/organizations/current` | the organization this request acts in |
+| `GET` | `/v1/projects` | `?limit=&cursor=` -> `{items, next_cursor}` |
+| `POST` | `/v1/projects` | needs `manage_workspace` |
+| `GET/PATCH/DELETE` | `/v1/projects/{id}` | delete is soft. `PATCH`/`DELETE` need `manage_workspace` |
+
+There is no `GET /v1/organizations` listing every organization. `GET /v1/me`
+carries the caller's memberships, which is the only answer that is theirs to
+have.
 
 ## Brand Brain
 
+Every mutating route here needs the `edit_brand` capability (§Authorization).
+
 | Method | Path | Notes |
 |---|---|---|
+| `GET` | `/v1/brands` | `?limit=&cursor=`, alphabetical |
 | `POST` | `/v1/brands` | create profile from onboarding form |
-| `GET/PATCH` | `/v1/brands/{id}` | validated `BrandProfile` payload |
+| `GET/PATCH/DELETE` | `/v1/brands/{id}` | validated `BrandProfile` payload; delete is soft |
+| `GET` | `/v1/brands/{id}/brain` | the Brand Brain panel: confirmed / inferred / unknown field status, documents and facts in one call |
+| `GET` | `/v1/brands/{id}/assets` | logo, product and font assets, each with a signed `url` |
 | `POST` | `/v1/brands/{id}/assets` | multipart; logo/product/font. MIME + magic-byte + size checked |
-| `GET/DELETE` | `/v1/brands/{id}/assets/{asset_id}` | |
-| `POST` | `/v1/brands/{id}/documents` | multipart PDF or `{url}` / `{text}`; returns `202` + document with `status=PENDING` |
+| `GET` | `/v1/brands/{id}/assets/{asset_id}/content` | the bytes — see **Media URLs** |
+| `GET` | `/v1/brands/{id}/documents` | every document with its ingestion status |
+| `POST` | `/v1/brands/{id}/documents` | multipart PDF or `{url}`; returns `202` + document with `status=PENDING` |
+| `POST` | `/v1/brands/{id}/documents/text` | `{title, text}` for pasted copy |
 | `GET` | `/v1/brands/{id}/documents/{doc_id}` | poll ingestion status |
-| `POST` | `/v1/brands/{id}/knowledge/query` | `{query, k}` -> retrieved chunks + scores. Exists for debugging and for the "what does the AI know about us" panel |
+| `GET` | `/v1/brands/{id}/facts` | extracted facts awaiting a human decision |
+| `PATCH` | `/v1/brands/{id}/facts/{fact_id}` | accept or reject one. **Only this makes a fact brand truth** — extraction output is never merged into the profile |
+| `POST` | `/v1/brands/{id}/knowledge/query` | `{query, k}` -> retrieved chunks + scores. A `POST` that reads, so it needs no capability |
 
 ## Campaigns
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/v1/campaigns` | `{project_id, brand_id, title, initial_message?}` |
-| `GET` | `/v1/campaigns` | `?project_id=&status=` |
-| `GET` | `/v1/campaigns/{id}` | campaign + status + current gate |
-| `GET` | `/v1/campaigns/{id}/state` | **the view model** — one call renders the whole workspace: brief, directions, spec, prompts, assets, evaluations, guardian, ranking, pending gate |
-| `POST` | `/v1/campaigns/{id}/cancel` | terminal `CANCELLED`; no further node runs |
+| `POST` | `/v1/campaigns` | `{brand_id, title, project_id?}`. Needs `edit_campaign` |
+| `GET` | `/v1/campaigns` | `?brand_id=&limit=&cursor=`, newest first |
+| `GET` | `/v1/campaigns/{id}` | campaign + status |
+| `GET` | `/v1/campaigns/{id}/overview` | **the view model** — one call renders the workspace. See §Campaign overview |
 
-### Running the graph
+**There is no `/state`, no `/cancel` and no `/runs`.** Earlier drafts of this
+document specified a generic run resource and a single view-model endpoint; what
+was built is one read and one mutation per stage, because each stage has
+different legal transitions and a different payload, and a generic `/runs`
+response could not say what any of them meant. `GET /overview` is the one call
+that renders a whole campaign, and the stage endpoints below are what advance it.
 
-| Method | Path | Notes |
-|---|---|---|
-| `POST` | `/v1/campaigns/{id}/runs` | `202` -> `{run_id, status}`. Starts or continues the graph. Idempotent per campaign: a run already `RUNNING` returns that run |
-| `GET` | `/v1/campaigns/{id}/runs/{run_id}` | `{status, current_node, node_history, pending_gate, error}` — drives the progress UI |
-| `GET` | `/v1/campaigns/{id}/runs` | history |
+A campaign is not cancellable. Nothing long-running belongs to a campaign as a
+whole: generation, evaluation and brand checks are database-backed jobs
+(ADR-012), each with its own explicit status, and there is no single execution to
+stop.
 
-`pending_gate` is the interrupt payload:
-
-```json
-{ "gate": "strategy",
-  "options": ["APPROVE", "REJECT", "REQUEST_REVISION"],
-  "payload": { "directions": [...], "recommended_direction_id": "…",
-               "recommendation_rationale": "…" } }
-```
-
-### Conversation
+### Discovery — the interview
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/v1/campaigns/{id}/messages` | transcript |
-| `POST` | `/v1/campaigns/{id}/messages` | user's interview answer; resumes the interviewer interrupt. `202` + run |
+| `POST` | `/v1/campaigns/{id}/discovery/start` | begins or resumes the interview -> `DiscoveryTurn` |
+| `POST` | `/v1/campaigns/{id}/discovery/answer` | `{answer}` — the user's reply, which resumes the interviewer's interrupt -> `DiscoveryTurn` |
+| `GET` | `/v1/campaigns/{id}/conversation` | the transcript |
+| `GET` | `/v1/campaigns/{id}/specification` | the Campaign Specification (`CampaignBrief`) — the source of truth |
+| `PATCH` | `/v1/campaigns/{id}/specification` | a human edit, marked `edited_by_human` on the field's assertion so recompilation cannot undo it |
+| `POST` | `/v1/campaigns/{id}/specification/confirm` | the human confirms the brief. `409` once confirmed, so `discovery/start` also answers `409` after that — a confirmed brief is read with `GET /specification`, not re-interviewed |
 
-### References
+`DiscoveryTurn` carries the question in play, what is still missing, and the
+specification as it stands. `thread_id` comes from the scope-checked campaign
+row, never from a request parameter (M1_SECURITY_AUDIT A-5).
+
+There is no `/messages` pair. An earlier draft specified `GET/POST
+/v1/campaigns/{id}/messages`; the transcript is read from `/conversation` and an
+answer is posted to `/discovery/answer`, because posting a reply and reading
+history are different operations against different state and one collection
+resource made them look like appends to the same list.
+
+### Preferences and references
 
 | Method | Path | Notes |
 |---|---|---|
+| `GET` | `/v1/campaigns/{id}/preferences/options` | the choices the picker offers |
+| `GET/PUT` | `/v1/campaigns/{id}/preferences` | the campaign's visual preferences. `PUT` because it is one whole document |
+| `GET` | `/v1/campaigns/{id}/references` | every reference with its analysis and status |
 | `POST` | `/v1/campaigns/{id}/references` | multipart images; `202`, analysis async |
-| `GET/DELETE` | `/v1/campaigns/{id}/references/{ref_id}` | |
+| `POST` | `/v1/campaigns/{id}/references/{ref_id}/analyze` | run or re-run the analysis |
+| `POST` | `/v1/campaigns/{id}/references/{ref_id}/accept` | accept the analysis into the creative context |
+| `GET` | `/v1/campaigns/{id}/references/{ref_id}/content` | the image bytes — see **Media URLs** |
+| `GET` | `/v1/campaigns/{id}/creative-context` | what the Creative Director will be given: brand rules, market, preferences and reference style, assembled in one place |
+
+A reference cannot be deleted. Its analysis feeds a `CreativeContext` that a
+Creative Specification was built from, so removing one would leave approved work
+citing something that is no longer there.
 
 ### Approval gates
 
@@ -266,16 +381,27 @@ fields, and it cannot grant itself an unlock the user's words did not.
 Only one revision may be open per campaign (`409`) — two proposals against the
 same version would race to become the next one.
 
-### Artefacts
+### Artefacts — where each one is actually read
 
-| Method | Path | Notes |
-|---|---|---|
-| `GET` | `/v1/campaigns/{id}/brief` | latest, `?version=` for history |
-| `GET` | `/v1/campaigns/{id}/directions` | |
-| `GET` | `/v1/campaigns/{id}/specification` | |
-| `GET` | `/v1/campaigns/{id}/prompts` | grouped by provider |
-| `GET` | `/v1/campaigns/{id}/assets` | assets + evaluation + guardian verdict + rank |
-| `GET` | `/v1/campaigns/{id}/revisions` | KEEP/CHANGE deltas per iteration |
+There is no per-artefact endpoint. Each artefact is carried by the stage view
+that owns it, because a stage's artefact is only meaningful with the state around
+it — a direction set without its gate, or a prompt without the job that used it,
+invites the reader to draw a conclusion the row does not support.
+
+| Artefact | Read from |
+|---|---|
+| Campaign Specification (`CampaignBrief`) | `GET /v1/campaigns/{id}/specification` |
+| Creative Directions, and which was chosen | `GET /v1/campaigns/{id}/creative` -> `direction_set` |
+| Creative Specification | `GET /v1/campaigns/{id}/creative` -> `specification` |
+| Compiled prompts | `GET /v1/campaigns/{id}/generation` — with the job each one produced |
+| Generated plates | `GET /v1/campaigns/{id}/assets` (same `GenerationView` shape) |
+| Evaluations and the ranking | `GET /v1/campaigns/{id}/evaluation` |
+| Guardian results | `GET /v1/campaigns/{id}/guardian` |
+| Revision deltas | `GET /v1/campaigns/{id}/revision` |
+| Layouts and renders | `GET /v1/campaigns/{id}/composition`, `GET /v1/campaigns/{id}/final-assets` |
+
+Earlier drafts listed `/brief`, `/directions`, `/prompts` and `/revisions`. None
+was built; the columns above are where those artefacts live.
 
 ### Per-channel creative copy
 
@@ -402,7 +528,21 @@ Shared by jobs, documents, exports and runs — one vocabulary everywhere:
 
 ## Polling contract
 
-The frontend polls `GET /runs/{run_id}` every 1.5 s while `RUNNING`, stops on any
-terminal status or `WAITING_HUMAN`, and backs off to 5 s after 60 s. SSE is a
-Milestone 10 optimisation; polling is the contract, because polling cannot
-silently die.
+There is no run resource to poll (see §Campaigns). **Each async stage is polled
+on its own read endpoint**, and each reports its own "am I still working" field:
+
+| Poll | Until |
+|---|---|
+| `GET /v1/campaigns/{id}/generation` | `complete` is true |
+| `GET /v1/campaigns/{id}/evaluation` | `in_flight` is zero |
+| `GET /v1/campaigns/{id}/guardian` | `in_flight` is zero |
+| `GET /v1/campaigns/{id}/overview` | no stage is `RUNNING` |
+| `GET /v1/brands/{id}/brain` | every document has a terminal status |
+
+**Every 1.5 s, backing off to 5 s after 60 s, and stopping the moment nothing is
+in flight** — the command centre polls at 2.5 s because it is a summary rather
+than a progress bar. A poller that keeps running against a finished campaign is
+a page nobody leaves open, so each one stops rather than slowing down for ever.
+
+SSE remains unbuilt and is not planned: polling cannot silently die, and these
+are jobs measured in tens of seconds.

@@ -56,15 +56,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # configuration error; catch it here rather than at the first retrieval.
     from app.providers.registry import (
         assert_embedding_dimensions,
+        assert_providers_are_built,
         build_embedding_provider,
-        build_llm_provider,
     )
 
+    # Constructing every provider proves each selected name has an adapter
+    # behind it. A name with no module raises here, at boot, rather than three
+    # minutes into an interview — or, as was the case for storage, image and
+    # search until this call existed, at the first upload of a working day
+    # (audit findings DOC-5 / BG-8). `DEPLOYMENT.md` §5 has always said this
+    # happens at startup; now it does.
+    assert_providers_are_built(settings)
     assert_embedding_dimensions(build_embedding_provider(settings))
-    # Constructing the reasoning provider proves the selected name has an
-    # adapter behind it. A name with no module raises ImportError here, at
-    # boot, rather than three minutes into an interview.
-    build_llm_provider(settings)
 
     # The dev stub asserts an identity but provisions nothing. Give that
     # identity a workspace here, once, so the request path stays identical in

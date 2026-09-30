@@ -441,6 +441,27 @@ create index on brand_chunks using hnsw (embedding vector_cosine_ops);
 > uniqueness, subject to the same Gate 2 approval, and the previous version
 > keeps saying exactly what it said.
 
+## Migration 010 — index `memberships.user_id` — **APPLIED**
+
+```sql
+create index ix_memberships_user_id on memberships (user_id);
+```
+
+One index. No column, no constraint, no data, no `schema_version` bump — there is
+no payload involved.
+
+`GET /v1/me` resolves the caller's memberships by `user_id` alone
+(`MembershipRepository.organizations_for_user`), and every screen in the product
+calls it. The only index on the table was the unique constraint on
+`(organization_id, user_id)`, whose **leading column is the wrong one** for that
+query, so it was a sequential scan on every page load. A composite index serves a
+prefix of its columns, not a suffix (audit finding PERF-2).
+
+**Tenancy is untouched.** Resolving a request's principal filters on *both*
+columns and could already use the unique index; the unique constraint itself is
+unchanged, so nothing about how organization scope is enforced moves. This is a
+read-path index and nothing else.
+
 ## Migration 003 sketch — the fuller workflow (Milestones 3–5)
 
 ```sql

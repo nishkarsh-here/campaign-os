@@ -34,16 +34,29 @@ function forgetSessionIfRejected(code: string): void {
   if (code === 'UNAUTHENTICATED') clearSession();
 }
 
+/**
+ * Every code the API can actually send, plus `NETWORK` for a request that never
+ * arrived. Kept equal to the table in `API_SPEC.md` §Conventions — it used to
+ * name `RATE_LIMITED` and `GRAPH_ERROR`, which nothing emits, and omit the
+ * provider and storage codes, which it does.
+ */
 export type ErrorCode =
   | 'VALIDATION_FAILED'
   | 'UNAUTHENTICATED'
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CONFLICT'
-  | 'RATE_LIMITED'
   | 'PROVIDER_ERROR'
-  | 'GRAPH_ERROR'
+  | 'PROVIDER_UNAVAILABLE'
+  | 'PROVIDER_TIMEOUT'
+  | 'PROVIDER_RATE_LIMITED'
+  | 'PROVIDER_INVALID_RESPONSE'
+  /** A vendor's safety filter refused. A normal outcome, not a bug. */
+  | 'CONTENT_BLOCKED'
+  | 'INVALID_STORAGE_KEY'
+  | 'STORAGE_OBJECT_NOT_FOUND'
   | 'INTERNAL'
+  /** Not from the API: the request never reached it. */
   | 'NETWORK';
 
 /**
@@ -76,9 +89,16 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 
-  /** True when retrying could plausibly succeed — drives the retry button. */
+  /**
+   * True when retrying could plausibly succeed — drives the retry button.
+   *
+   * Provider failures are already covered by the status: every `ProviderError`
+   * is served as `502`. `CONTENT_BLOCKED` deliberately is not retryable — a
+   * safety filter will refuse the same request again, and offering a button
+   * that cannot work is worse than saying so.
+   */
   get isRetryable(): boolean {
-    return this.status >= 500 || this.code === 'NETWORK' || this.code === 'RATE_LIMITED';
+    return this.status >= 500 || this.code === 'NETWORK';
   }
 }
 

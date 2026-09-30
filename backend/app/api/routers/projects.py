@@ -12,6 +12,7 @@ import uuid
 
 from fastapi import APIRouter, Query, status
 
+from app.api.authz import ManageWorkspaceDep
 from app.api.deps import PrincipalDep, SessionDep
 from app.api.schemas import CreateProjectRequest, ProjectPage, UpdateProjectRequest
 from app.domain.workspace import Project
@@ -56,7 +57,7 @@ async def list_projects(
 
 @router.post("", response_model=Project, status_code=status.HTTP_201_CREATED)
 async def create_project(
-    body: CreateProjectRequest, principal: PrincipalDep, session: SessionDep
+    body: CreateProjectRequest, principal: ManageWorkspaceDep, session: SessionDep
 ) -> Project:
     row = await _repo(principal, session).create(
         name=body.name, description=body.description, created_by=uuid.UUID(principal.user.id)
@@ -74,7 +75,7 @@ async def get_project(project_id: str, principal: PrincipalDep, session: Session
 
 @router.patch("/{project_id}", response_model=Project)
 async def update_project(
-    project_id: str, body: UpdateProjectRequest, principal: PrincipalDep, session: SessionDep
+    project_id: str, body: UpdateProjectRequest, principal: ManageWorkspaceDep, session: SessionDep
 ) -> Project:
     repo = _repo(principal, session)
     row = await repo.get(_parse_id(project_id))
@@ -91,7 +92,9 @@ async def update_project(
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_project(project_id: str, principal: PrincipalDep, session: SessionDep) -> None:
+async def delete_project(
+    project_id: str, principal: ManageWorkspaceDep, session: SessionDep
+) -> None:
     repo = _repo(principal, session)
     row = await repo.get(_parse_id(project_id))
     if row is None:

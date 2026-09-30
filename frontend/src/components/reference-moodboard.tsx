@@ -100,6 +100,7 @@ export function ReferenceCard({
             {/* `object-contain` on a neutral field: a reference is someone
                 else's work being studied, not a hero image to be cropped for
                 our layout. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               // `mediaUrl`, not the bare path: the API returns a path, and a
               // relative `src` resolves against the *page* origin — the Next

@@ -12,6 +12,7 @@ from app.auth.base import AuthenticatedUser, AuthProvider
 from app.auth.dev_stub import DevStubAuthProvider
 from app.auth.registry import build_auth_provider
 from app.config import Settings
+from tests.conftest import production_settings
 
 pytestmark = pytest.mark.unit
 
@@ -39,15 +40,10 @@ class TestDevStub:
 
     def test_it_refuses_to_construct_in_production(self) -> None:
         with pytest.raises(RuntimeError, match="never run in production"):
-            DevStubAuthProvider(
-                # A production `Settings` also needs a media signing key; that
-                # is a separate guard, and this test is about the auth one.
-                Settings(
-                    app_env="production",
-                    auth_provider="dev_stub",
-                    media_url_secret="test-signing-key",
-                )
-            )
+            # Production has several other guards — a signing key, real CORS,
+            # a database that is not localhost. `production_settings` supplies
+            # them, because this test is about the auth one.
+            DevStubAuthProvider(production_settings(auth_provider="dev_stub"))
 
 
 class TestRegistry:

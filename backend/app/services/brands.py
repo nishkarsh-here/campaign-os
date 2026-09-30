@@ -22,6 +22,7 @@ from app.domain.brand import BrandProfile
 from app.domain.workspace import Principal
 from app.errors import NotFound
 from app.repositories.brands import BrandRepository
+from app.repositories.pagination import DEFAULT_LIMIT, Page
 
 #: Fields a client may set. `id` and `organization_id` are deliberately absent.
 EDITABLE_FIELDS = frozenset(
@@ -76,8 +77,17 @@ class BrandService:
             raise NotFound("Brand not found.")
         return row
 
-    async def list_brands(self) -> list[BrandProfile]:
-        return [row_to_profile(r) for r in await self.repo.list_all()]
+    async def list_brands(
+        self, *, limit: int = DEFAULT_LIMIT, cursor: str | None = None
+    ) -> Page[BrandProfile]:
+        """One page of brands, alphabetical.
+
+        Paged rather than whole (audit finding PERF-1): an organization's brand
+        list grows with the tenant. The `Page` is the repository's own, not an
+        API schema — the service does not know about HTTP.
+        """
+        page = await self.repo.list_page(limit=limit, cursor=cursor)
+        return Page(items=[row_to_profile(r) for r in page.items], next_cursor=page.next_cursor)
 
     async def get(self, brand_id: uuid.UUID) -> BrandProfile:
         return row_to_profile(await self._row(brand_id))

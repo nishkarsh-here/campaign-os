@@ -99,6 +99,19 @@ export default function CampaignLayout({
   const currentId = currentNodeId(campaignId, pathname);
   const rail = <Meridian nodes={nodes} currentId={currentId} />;
 
+  /**
+   * Compose gets the full width.
+   *
+   * Every other stage is reading, and the context rail earns its place beside
+   * the text. Compose is a production workspace with three zones of its own —
+   * layers, canvas, inspector — and a fourth column squeezes the canvas to a
+   * couple of hundred pixels, which is the one thing that screen must not do.
+   * Nothing is lost: the campaign, brand, market and version are all stated on
+   * the final-asset panel, where they belong to the deliverable rather than
+   * floating beside it.
+   */
+  const wantsFullWidth = pathname.endsWith('/compose');
+
   // The caller has to be known before anything else can render: the shell
   // needs the organization, and every stage request is scoped by it.
   if (workspace.loading) {
@@ -128,6 +141,7 @@ export default function CampaignLayout({
       activeOrganizationId={organizationId}
       onOrganizationChange={workspace.setOrganizationId}
       rail={rail}
+      wide={wantsFullWidth}
       header={
         <CampaignIdentityBar
           overview={overview}
@@ -136,12 +150,14 @@ export default function CampaignLayout({
         />
       }
       aside={
-        <CampaignContextRail
-          campaignId={campaignId}
-          overview={overview}
-          specification={specification}
-          capabilities={capabilities}
-        />
+        wantsFullWidth ? undefined : (
+          <CampaignContextRail
+            campaignId={campaignId}
+            overview={overview}
+            specification={specification}
+            capabilities={capabilities}
+          />
+        )
       }
     >
       <CampaignWorkspaceProvider

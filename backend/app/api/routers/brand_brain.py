@@ -13,6 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
 from fastapi.responses import Response
 
+from app.api.authz import EditBrandDep
 from app.api.deps import (
     EmbeddingsDep,
     LLMDep,
@@ -135,7 +136,7 @@ async def list_documents(
 )
 async def upload_document(
     brand_id: str,
-    principal: PrincipalDep,
+    principal: EditBrandDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: StorageDep,
@@ -179,7 +180,7 @@ async def upload_document(
 async def create_text_document(
     brand_id: str,
     body: CreateTextDocumentRequest,
-    principal: PrincipalDep,
+    principal: EditBrandDep,
     session: SessionDep,
     storage: StorageDep,
     embeddings: EmbeddingsDep,
@@ -236,7 +237,7 @@ async def list_assets(
 @router.post("/assets", response_model=BrandAssetSummary, status_code=status.HTTP_201_CREATED)
 async def upload_asset(
     brand_id: str,
-    principal: PrincipalDep,
+    principal: EditBrandDep,
     session: SessionDep,
     link: MediaLinkDep,
     settings: SettingsDep,
@@ -351,7 +352,7 @@ async def decide_fact(
     brand_id: str,
     fact_id: str,
     body: FactDecisionRequest,
-    principal: PrincipalDep,
+    principal: EditBrandDep,
     session: SessionDep,
 ) -> FactSummary:
     """Accept or reject a proposal.

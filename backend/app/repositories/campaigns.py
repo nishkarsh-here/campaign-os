@@ -25,6 +25,7 @@ from app.db.models import (
 )
 from app.domain.common import utc_now
 from app.repositories.base import OrganizationOwnedRepository
+from app.repositories.pagination import DEFAULT_LIMIT, Page, keyset_page
 
 
 class CampaignRepository(OrganizationOwnedRepository[CampaignRow]):
@@ -33,11 +34,26 @@ class CampaignRepository(OrganizationOwnedRepository[CampaignRow]):
     def _scope(self, stmt: Select[Any]) -> Select[Any]:
         return super()._scope(stmt).where(CampaignRow.deleted_at.is_(None))
 
-    async def list_all(self, *, brand_id: uuid.UUID | None = None) -> list[CampaignRow]:
-        stmt = self.scoped().order_by(CampaignRow.created_at.desc())
+    async def list_page(
+        self,
+        *,
+        brand_id: uuid.UUID | None = None,
+        limit: int = DEFAULT_LIMIT,
+        cursor: str | None = None,
+    ) -> Page[CampaignRow]:
+        """One page, still newest first.
+
+        This was `list_all()`, which returned every campaign in the organization
+        (audit finding PERF-1) — the one list here that grows without limit for
+        a real tenant. Keyed on `(created_at, id)` descending, which is the order
+        the list already had.
+        """
+        stmt = self.scoped()
         if brand_id is not None:
             stmt = stmt.where(CampaignRow.brand_profile_id == brand_id)
-        return list((await self.session.execute(stmt)).scalars().all())
+        return await keyset_page(
+            self.session, stmt, CampaignRow, descending=True, limit=limit, cursor=cursor
+        )
 
     async def create(
         self,

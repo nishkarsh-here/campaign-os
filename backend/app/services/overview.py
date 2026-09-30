@@ -154,10 +154,7 @@ class CampaignOverviewService:
             _stage("guardian", guardian.state, guardian.detail),
             _stage("composition", composition.state, composition.detail),
         ]
-        nxt = next(
-            (s for s in stages if s.state in (ATTENTION, FAILED, PENDING)),
-            None,
-        )
+        nxt = next_unfinished_stage(stages)
 
         summary = evaluation.summary
         recommendation = summary.recommendation if summary else None
@@ -373,6 +370,28 @@ class _Part:
     composed: list[str] = field(default_factory=list)
     assets: list[FinalAssetRow] = field(default_factory=list)
     layout_version: int | None = None
+
+
+def next_unfinished_stage(stages: list[StageState]) -> StageState | None:
+    """Where the campaign is: the first stage that is not `DONE`.
+
+    Stages arrive in pipeline order, so that is the whole rule. `None` means
+    every stage is finished, and nothing else may mean that.
+
+    It used to be the first stage in `(ATTENTION, FAILED, PENDING)`, leaving
+    `RUNNING` and `BLOCKED` out. A campaign whose generation was in flight —
+    with evaluation, the brand check and composition all `BLOCKED` behind it —
+    therefore had no next stage, and the workspace reads a missing next stage as
+    "this campaign is complete" (audit finding DH-1). It said so while the very
+    same payload carried `generation: RUNNING`, and offered a link to final
+    assets that did not exist.
+
+    *Nothing is waiting on a person* and *nothing is happening* are different
+    statements. This function answers the second; which of the four unfinished
+    states it is, and therefore whether a person is being asked for anything, is
+    on the stage it returns.
+    """
+    return next((stage for stage in stages if stage.state != DONE), None)
 
 
 def _stage(key: str, state: str, detail: str) -> StageState:

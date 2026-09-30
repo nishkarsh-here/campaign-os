@@ -437,8 +437,49 @@ email** (§A-1), and **Milestone 4 must resolve a campaign through the scoped
 repository before deriving a checkpoint `thread_id` from it** (§A-5), because
 the checkpointer has no concept of an organization.
 
-**UI-2C in progress** — sub-phases A, B, C, D and E done; F outstanding.
-Rules it established so far:
+**UI-2C complete** — all sub-phases A through F. Rules F established:
+
+- **The canvas is a preview; the renderer is the truth.** The browser draws
+  `LayoutSpec` geometry faithfully and cannot reproduce Pillow's line breaking,
+  hinting or scrim alpha — so it is labelled `Preview`, and the final asset is
+  what the server returns. A screen that let the two blur would undo ADR-006's
+  whole claim.
+- **Text size is a fraction of canvas height, so the canvas is a container.**
+  `container-type: size` makes `1cqh` mean exactly what `text_style.size` means,
+  which is how a headline set at `0.075` stays 7.5% of the frame at every
+  breakpoint with no resize listener and no pixel state in React to drift from
+  the spec.
+- **`PATCH /composition` refuses a blocking edit outright.** It does not save a
+  broken layout with a warning, so the canvas shows the last accepted state and
+  a refusal is reported in the server's own sentence. Local geometry is shown
+  while dragging because "is this rectangle inside that rectangle" is
+  arithmetic about numbers the layout already carries — not a validation rule
+  invented in the browser.
+- **`available_channels` is the composable set *minus* the composed ones.**
+  Reading it alone hid every channel the campaign already worked on. The union
+  with `composed_channels` is the real set, derived rather than restated.
+- **A size is shown only for a channel the app has really seen one for.**
+  `CHANNEL_DIMENSIONS` lives in the backend domain and no endpoint publishes it,
+  so an uncomposed channel says "compose to add" rather than a number this app
+  invented.
+- **A lock is an affordance plus a sentence; the refusal is the truth.** The
+  composition API projects no per-element capability descriptor, so `locksFor`
+  mirrors `PROTECTED_ROLES` and the two guards in one documented place. It
+  drives a padlock and an explanation, never a claim — if it ever disagrees with
+  the server, the server's rejection is what the user reads.
+- **A control is offered only where the server accepts it.** `editableFields`
+  mirrors `_editable_fields`: a size control on a logo would be a knob that
+  quietly does nothing.
+- **Compose gets the full width, and the context rail steps aside.** Every other
+  stage is reading and earns the rail; Compose is a production workspace with
+  three zones of its own, and a fourth column squeezed the canvas to ~200px.
+  Nothing is lost — the campaign, brand, market and version are stated on the
+  final-asset panel, where they belong to the deliverable.
+- **One title per panel.** The collapsible carries it below `xl` and a plain
+  label carries it at `xl`; rendering it inside the panel as well put "Layout
+  check" on screen twice on a phone.
+
+Rules the earlier sub-phases established:
 
 - **Version facts come from rows that stamp their own version.**
   `GeneratedAssetView`, `GuardianResultView`, `GenerationView` and
@@ -734,8 +775,168 @@ Rules it established:
 - **Dev stub is load-bearing, not legacy.** The offline demo must keep running
   with no identity provider, no keys and no network, forever.
 
-Next: UI-2C-F — compose and export, the last screens still structurally
-unchanged.
+**Pre-deployment audit fix pass complete.** The audit is in this file's history
+and its findings are closed or explicitly deferred below. Rules it established:
+
+- **The rows are the product state; the checkpoint is execution state.**
+  `CreativeStageService.current()` falls back to reading `creative_direction_sets`
+  and `creative_specifications` when no checkpoint exists, because `_project`
+  exists to write graph state *into* those tables for the UI to read (ADR-004) —
+  reading them back is the same direction of flow, not a second source of truth.
+  The benchmark's nine campaigns are row-seeded and never ran the graph, so they
+  had reported no creative at all while the database held approved directions and
+  an approved plan. `gate` and `gaps` stay absent in that view rather than
+  guessed: a gate is open when the graph is *parked on its node*, and there is
+  nothing parked, so reporting one would draw an Approve button with no
+  checkpoint to resume.
+- **A re-entry guard that cannot see a row is not a guard.** `_advance` checked
+  `existing.values` — the checkpoint — so a campaign whose creative exists only
+  in the tables took the "start from scratch" branch, and `upsert_version` wrote
+  the Creative Director's fresh output over an approved, human-decided version 1.
+  Two fixes, because one was not enough: the service refuses to start when a
+  direction set row exists, and the repository refuses to *replace* an approved
+  row's payload at all. Idempotent is not the same as overwriting — the graph
+  re-projects identical state many times, and that must stay a no-op.
+- **Role enforcement is a dependency, not a habit.** `app/api/authz.py` is the
+  authority and `lib/capabilities.ts` is its mirror; a test asserts they agree.
+  Twenty-nine mutating routes depend on `require(capability)` *instead of*
+  `PrincipalDep`, so the check cannot be forgotten separately from getting hold
+  of the caller — and a test reads the routers and fails on any mutating route
+  still reachable with a bare principal. The two creative gates check the
+  **decision** rather than the route, because approving and asking for changes
+  are different rights held by different roles.
+- **Authorization narrows tenancy; it never replaces it.** Membership is
+  resolved first and every repository still filters by organization. So `403`
+  means "you belong here and lack the right" and `404` still means "not yours" —
+  the case where existence is the secret.
+- **"Nothing is waiting on a person" is not "nothing is happening."** The
+  overview nominated a next stage only from `(ATTENTION, FAILED, PENDING)`, so a
+  campaign mid-generation had none, and the workspace reads a missing next stage
+  as complete. It now nominates the first stage that is not `DONE`, and the card
+  says which of the four unfinished states that is. It had been announcing "This
+  campaign is complete" while the same payload carried `generation: RUNNING`.
+- **Align by identity, never by position.** The Compare table read
+  `dimensions[index]` across evaluations and filled gaps with `?? 0` — so a
+  six-dimension evaluation showed its scores under the first six labels and four
+  fabricated zeroes, coloured as bad scores. `aggregate_score` renormalises over
+  the dimensions present precisely so a partial evaluation is not a zeroed one;
+  the screen now says "not scored" and the union of dimensions is the row set.
+- **A name in an environment variable is not a capability.** Every provider is
+  constructed at startup, so an unbuilt one is a boot failure naming the
+  variable — which §5 of DEPLOYMENT.md had always claimed and only the LLM and
+  embedding seams actually did. `/v1/health` reports `provider_status` — what
+  *constructed* — beside `providers`, the configured names, and an unavailable
+  seam degrades the status. It had answered `ok` with `storage: supabase` while
+  the adapter did not exist.
+- **Supabase storage is a seam, not an option.** `local` is the only storage
+  provider in this build, so the documented production environment now selects
+  it and multi-instance deployment means a shared volume. `tests/
+  test_deployment_startup.py` builds `Settings` from the block in DEPLOYMENT.md
+  §7 and constructs every provider it names, so the documented deploy cannot
+  drift back into one that does not boot. It was two startup failures deep.
+- **Idempotency is derived, not supplied.** There is no `Idempotency-Key` header
+  and there never was; `generation_jobs.idempotency_key` is computed from
+  `(prompt, provider, model, attempt)` and is `UNIQUE`, which is stronger — it
+  holds for a client that sends nothing, and the attempt number lets a
+  *deliberate* retry through where a replay is refused. The document was
+  corrected to describe the mechanism that exists.
+- **Paginate what grows with the tenant; leave alone what grows with a
+  campaign.** `/projects`, `/brands` and `/campaigns` are keyset-paged on the
+  column each was already sorted by, so no screen's order changed. The
+  campaign-scoped lists are not paged, because a cursor there would be a knob
+  with nothing behind it. `next_cursor` is additive, so every existing caller
+  kept working.
+- **A cursor is opaque, so it must be tagged.** One minted for a timestamp-keyed
+  list and replayed against a name-keyed one is refused as a bad cursor. Postgres
+  will not compare `text > timestamptz`, so without the tag it was a 500 — found
+  by a test written to assert the opposite.
+- **The document is asserted against the app, in both directions.**
+  `tests/test_api_spec_matches_routes.py`. API_SPEC.md had 16 endpoints that did
+  not exist, 46 that were undocumented, and a polling contract naming a 404. The
+  mechanism already existed for `.env.example` and had simply never been pointed
+  at the API. Endpoints an earlier draft specified are listed as deliberately
+  absent *with the sentence in the document that disowns them*, so the list
+  cannot become a place to hide things.
+
+**Deployment readiness pass complete** — the repository is prepared for a first
+hosted deployment. Nothing about the product or the workflow changed. Rules it
+established:
+
+- **A build-time variable is baked, so the build must refuse rather than
+  default.** `API_BASE_URL` is inlined into the browser bundle by `next build`
+  and no runtime environment can correct it afterwards, so `next.config.mjs`
+  throws when it is missing and refuses a loopback origin unless
+  `ALLOW_LOOPBACK_API_BASE_URL=true` says the build really is a local smoke
+  test. The old default produced a site that built cleanly, loaded perfectly and
+  could reach nothing, because the browser resolves `127.0.0.1` against the
+  *visitor's* machine. `next dev` keeps the default; that is what dev is for.
+- **Production refuses configuration that is unsafe, not just absent.**
+  `Settings._refuse_unsafe_production` rejects wildcard, empty and plaintext
+  `CORS_ORIGINS`, a `DATABASE_URL` still on localhost, and `DEMO_MODE=true` —
+  every one of which is a supplied, valid value that produces a deploy which
+  comes up looking healthy. Absence was already covered; this is the other half.
+- **The identity provider is a readiness seam like any other.**
+  `DevStubAuthProvider` authenticates every caller as the same user and its
+  constructor refuses `APP_ENV=production` — its docstring called that "a startup
+  failure rather than a silent hole", and nothing constructed it at startup, so
+  the process booted, `/v1/health` said `ok` with `auth: dev_stub`, and the guard
+  fired as a 500 on the first authenticated request. `auth` now sits in
+  `_SEAMS` beside the five providers. The architectural separation stands
+  (ADR-016 — different module, different Protocol); what moved is the
+  *readiness* question, which is a deployment question and belongs in one place.
+- **`local` is the only storage provider, so the instance count is a
+  constraint, not a preference.** One backend instance unless every instance
+  mounts the same filesystem, and the volume must survive redeploys — an asset
+  uploaded through one instance is a 404 through another, intermittently.
+  Stated in DEPLOYMENT.md §4 as a constraint rather than implied by §5's table.
+- **The documented deployment is executed, not read.**
+  `tests/test_deployment_startup.py` parses the environment blocks out of
+  DEPLOYMENT.md, builds `Settings` from them and constructs every provider they
+  name — now for the production block *and* the recommended first deployment.
+  Headings are matched by text, not number, because inserting a section
+  renumbered them and a test that breaks on that reports the wrong thing.
+- **The first deployment uses real auth and mock models.** Real Supabase, real
+  database, real volume, `IMAGE_PROVIDER=mock`. It exercises every path that can
+  go wrong in *hosting* — sign-in, CORS, signed media, the volume, migrations —
+  while spending nothing. Going live on real models afterwards is three
+  variables and a key, which is the point of the provider abstraction.
+- **Supabase auth is implemented and offline-tested; it has never run against a
+  real project.** That sentence stays in the documentation until someone has
+  actually signed in. The provider does attempt a real call — an unreachable
+  identity provider becomes a `401` with a reason, never a pass-through — but
+  attempting is not the same as succeeding.
+
+Deferred, with reasons:
+
+- **PERF-3 — `OverviewService` stays sequential.** Gathering its ten stage reads
+  would share one `AsyncSession` across concurrent tasks, which raises "Session
+  is already flushing" — the rule ADR-012 and Milestones 6 and 7 already
+  established. Concurrency here needs a session per task, which is a change to
+  how the read model is constructed for a saving nobody has measured.
+- **The four gaps UI-2C-E and UI-2C-F recorded** (below) are unchanged. Each
+  needs a backend projection, which is new API surface rather than a fix.
+
+Backend gaps recorded by UI-2C-F and not worked around:
+
+**`CHANNEL_DIMENSIONS` is not published.** The layout engine, the prompt
+compiler and the channel picker all need to agree about what an Instagram story
+is, and the table lives in `app/domain/common.py` where the browser cannot read
+it. Useful because a channel picker that cannot state a size before you compose
+is a picker you have to guess at. Workaround: sizes are shown only for channels
+a layout or a rendered asset has already given real dimensions for.
+
+**No per-element capability descriptor on the composition API.**
+`_editable_fields`, `PROTECTED_ROLES` and the two guards decide what an edit may
+touch, and none is projected — so the editor mirrors them to decide which
+controls to draw. Useful because a mirror can drift. Workaround: the mirror is
+isolated in `lib/compose.ts`, drives affordances only, and the server's typed
+rejection is what the user is shown.
+
+**A brand asset projects no storage key.** The layout's logo element carries
+one; `BrandAssetSummary` carries a signed `url` and no key, so the two cannot be
+matched exactly and the preview picks the first asset of kind `logo`/`logo_mono`
+— which is what `_logo_row` does. Only the preview is affected: the renderer
+uses the key, so the file is always right.
 
 Open backend gap, recorded by UI-2C-E and not worked around: **the revised
 specification is not projected.** `RevisionStageService.RevisionView` holds
