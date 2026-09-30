@@ -1,0 +1,149 @@
+# Render Blueprint — the first deployment of campaign-os.
+#
+# Two web services and a disk. The database is **not** here: the deployment
+# needs a Supabase project for authentication anyway, and a Supabase project
+# includes Postgres with pgvector — so using it for both is one vendor fewer
+# than adding a second managed database. See docs/DEPLOYMENT.md §13.
+#
+# ---------------------------------------------------------------------------
+# Why this shape, and not a smaller one
+# ---------------------------------------------------------------------------
+#
+# **The API is a web service, not a serverless function.** Generation,
+# evaluation and brand checks run as in-process asyncio tasks that outlive the
+# response (`run_batch_in_background`, ADR-012), and startup does work no
+# per-invocation cold start can do — `ensure_checkpoint_tables` issues
+# CREATE INDEX CONCURRENTLY, and `reconcile_interrupted_jobs` marks whatever a
+# previous process abandoned as FAILED. A function runtime would terminate the
+# first and repeat the second on every request.
+#
+# **The disk is the reason `numInstances` is absent.** `STORAGE_PROVIDER=local`
+# is the only storage provider this build has, so uploaded documents, generated
+# plates and rendered assets are files on this volume. Render will not scale a
+# service that has a disk past one instance, which is exactly the constraint the
+# code already has (docs/DEPLOYMENT.md §4) rather than a limitation of Render.
+#
+# **Do not use the free instance type for the API.** A service that sleeps loses
+# in-flight background work, and the next start marks those jobs FAILED — which
+# is correct behaviour reported honestly, and a bad first impression. Free
+# instances also have no persistent disk and no `preDeployCommand`.
+#
+# ---------------------------------------------------------------------------
+# What you must set by hand after the first apply
+# ---------------------------------------------------------------------------
+#
+# Three values are circular or secret and are marked `sync: false`, so Render
+# prompts for them instead of taking them from this file:
+#
+#   * DATABASE_URL / DATABASE_URL_SYNC — from Supabase, and **not** the
+#     transaction pooler. See §13 of the deployment guide: CREATE INDEX
+#     CONCURRENTLY cannot run through transaction pooling, and asyncpg's
+#     prepared statements break on it.
+#   * SUPABASE_URL / SUPABASE_ANON_KEY — from Supabase Project Settings → API.
+#   * CORS_ORIGINS and API_BASE_URL — each service's URL is only known after it
+#     first deploys, and they point at each other. Set them, then redeploy.
+#     The frontend must be **rebuilt**, not restarted: API_BASE_URL is inlined.
+#
+# MEDIA_URL_SECRET is generated once by Render and then held constant. Every
+# instance must share it; with one instance that is automatic, and it must not
+# be regenerated on deploy or every link on an open page breaks.
+
+services:
+  # -------------------------------------------------------------- backend
+  - type: web
+    name: campaign-os-api
+    runtime: python
+    plan: starter
+    rootDir: backend
+    region: oregon
+    healthCheckPath: /v1/health
+
+    buildCommand: pip install uv && uv sync --no-dev --frozen
+
+    # Migrations run here: before the new version receives traffic, and never
+    # from inside the API process. Two instances racing the same migration is
+    # the one thing this setup cannot recover from (docs/DEPLOYMENT.md §1).
+    preDeployCommand: uv run alembic upgrade head
+
+    # --host 0.0.0.0 is what makes the process reachable from outside its
+    # container. API_HOST is read by nothing (docs/DEPLOYMENT.md §2).
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    disk:
+      name: campaign-os-storage
+      mountPath: /var/lib/campaign-os/storage
+      sizeGB: 5
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: APP_ENV
+        value: production
+      - key: AUTH_PROVIDER
+        value: supabase
+      - key: STORAGE_PROVIDER
+        value: local
+      - key: LOCAL_STORAGE_DIR
+        value: /var/lib/campaign-os/storage
+
+      # Mock model providers for the first deployment. This exercises every
+      # path that can fail in *hosting* — sign-in, CORS, signed media, the
+      # volume, migrations — while spending nothing and calling no vendor.
+      # Going live on real models later is these three plus GEMINI_API_KEY.
+      - key: LLM_PROVIDER
+        value: mock
+      - key: IMAGE_PROVIDER
+        value: mock
+      - key: EMBEDDING_PROVIDER
+        value: mock
+      - key: SEARCH_PROVIDER
+        value: none
+
+      # A production instance that happens to use mock providers is not a
+      # declared demonstration, and production refuses DEMO_MODE=true.
+      - key: DEMO_MODE
+        value: "false"
+
+      # Generated once by Render and then constant. Rotating it invalidates
+      # every media link already on a rendered page.
+      - key: MEDIA_URL_SECRET
+        generateValue: true
+
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_SYNC
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      # The exact frontend origin, https, no wildcard. Production refuses a
+      # wildcard, an empty value and a plaintext origin.
+      - key: CORS_ORIGINS
+        sync: false
+
+  # ------------------------------------------------------------- frontend
+  - type: web
+    name: campaign-os-web
+    runtime: node
+    plan: starter
+    rootDir: frontend
+    region: oregon
+
+    # API_BASE_URL, SUPABASE_URL and SUPABASE_ANON_KEY are read here, at build
+    # time, and inlined into the browser bundle. Changing any of them needs a
+    # **rebuild**; a restart will keep serving the old values.
+    buildCommand: npm ci && npm run build
+    startCommand: npx next start -p $PORT
+
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # The build refuses without this and refuses a loopback origin, so a
+      # bundle that cannot reach its API fails here rather than in a browser.
+      - key: API_BASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false

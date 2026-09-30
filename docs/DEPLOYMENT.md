@@ -647,3 +647,101 @@ discover is an outage.
 Migrations are additive. Nothing in this project drops a column that a running
 older instance still reads, so a rolling deploy is safe; a migration that ever
 needs to would have to be split across two releases.
+
+## 13. Hosting: the chosen platform, and why
+
+**Render for both services, Supabase for authentication and Postgres.** Two
+vendors, three running things, one blueprint file (`render.yaml` at the repo
+root). Nothing else is needed and nothing else is used.
+
+### What the code rules out
+
+The architecture was not chosen from preference; most of it is forced.
+
+* **The API cannot be serverless.** Generation, evaluation and brand checks run
+  as in-process asyncio tasks that outlive the response (`run_batch_in_background`,
+  ADR-012), and startup does work no per-invocation cold start can do —
+  `ensure_checkpoint_tables` issues `CREATE INDEX CONCURRENTLY` and
+  `reconcile_interrupted_jobs` marks what a previous process abandoned as
+  `FAILED`. On a function runtime the first is killed mid-flight and the second
+  runs on every request. So: Vercel Functions, Lambda and Cloudflare Workers are
+  out **for the API**. Vercel remains perfectly good for the frontend if you
+  would rather split it; it is one vendor more, and nothing else changes.
+* **The API needs a persistent disk, and therefore exactly one instance.**
+  `local` is the only storage provider in this build (§4, §5). Render attaches a
+  disk to one service and will not scale that service past one instance — the
+  platform enforcing the constraint the code already has, rather than fighting
+  it.
+* **Postgres needs `pgcrypto`, `citext` and `vector`**, and the migrations create
+  them, so the role running them needs `CREATE EXTENSION` the first time.
+
+### Why Supabase for Postgres too
+
+The deployment needs a Supabase project for authentication regardless, and a
+Supabase project includes Postgres with pgvector available. Using it for both is
+one vendor and one bill fewer than adding a separate managed database. Render
+Postgres also works — pick either, and if you pick Render the connection-mode
+warning below does not apply.
+
+### The connection string is not a free choice
+
+Supabase offers a direct connection, a **session** pooler and a **transaction**
+pooler. **Use the direct connection or the session pooler. Not the transaction
+pooler.** Two things in this application break on transaction pooling:
+
+* `CREATE INDEX CONCURRENTLY`, which `ensure_checkpoint_tables` issues at
+  startup, cannot run inside a transaction block and needs a session-level
+  connection;
+* asyncpg uses prepared statements, which transaction-mode poolers do not
+  support — the symptom is `prepared statement "__asyncpg_stmt_x__" already
+  exists`, intermittently, under load.
+
+The direct connection is IPv6-only on Supabase unless the IPv4 add-on is
+enabled, so the **session pooler** is usually the right answer from a host whose
+egress is IPv4. Verify by running the migration: if `alembic upgrade head`
+succeeds and the API starts without checkpoint errors, the connection mode is
+right.
+
+`DATABASE_URL` takes the `postgresql+asyncpg://` scheme and `DATABASE_URL_SYNC`
+takes `postgresql://` — same database, two drivers, because Alembic is
+synchronous and the app is not.
+
+### Deploying
+
+```bash
+# 0. Push the repository to GitHub; Render deploys from a branch.
+
+# 1. Supabase — create the project, then follow §6 "Connecting to a real
+#    Supabase project" exactly. You need: Project URL, anon key, Email sign-in
+#    enabled, one user created, and that user's connection string.
+#    You do NOT need the service-role key: nothing in this build uses it.
+
+# 2. Render — New → Blueprint, point it at the repository. It reads
+#    render.yaml and creates both services and the disk.
+
+# 3. Fill the values Render prompts for (marked `sync: false`):
+#      campaign-os-api : DATABASE_URL, DATABASE_URL_SYNC, SUPABASE_URL,
+#                        SUPABASE_ANON_KEY, CORS_ORIGINS
+#      campaign-os-web : API_BASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY
+#    CORS_ORIGINS and API_BASE_URL point at each other, so they are only
+#    knowable after the first deploy. Set them, then:
+#      - restart the API   (CORS_ORIGINS is read at runtime)
+#      - REBUILD the web   (API_BASE_URL is inlined at build time)
+
+# 4. Watch the API's first deploy log. `preDeployCommand` runs
+#    `alembic upgrade head` before the new version takes traffic.
+```
+
+`MEDIA_URL_SECRET` is generated once by Render (`generateValue: true`) and then
+held constant. Do not rotate it on a deploy: every media link already on an open
+page stops verifying. If you set it by hand instead:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+### Then run §10's smoke tests
+
+In order, stopping at the first failure. Test 20 — redeploy the API and reload a
+page with an image — is the one that catches a disk that is not actually
+persistent, and it is invisible until the first redeploy.

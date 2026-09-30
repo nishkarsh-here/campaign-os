@@ -27,14 +27,24 @@ afterEach(() => {
   process.env = saved;
 });
 
-/** Import the config fresh under a given environment. */
-async function load(env: Record<string, string | undefined>) {
+/**
+ * Import the config fresh under a given environment and evaluate a phase.
+ *
+ * The config is a function of the Next.js phase rather than a bare object,
+ * because `next start` evaluates this file too — validating on `NODE_ENV` made
+ * a correctly-built artefact refuse to boot.
+ */
+async function load(
+  env: Record<string, string | undefined>,
+  phase = 'phase-production-build',
+) {
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
   vi.resetModules();
-  return (await import(CONFIG)).default;
+  const configure = (await import(CONFIG)).default;
+  return configure(phase);
 }
 
 describe('a production build', () => {
@@ -97,8 +107,26 @@ describe('a production build', () => {
 
 describe('development', () => {
   it('keeps the localhost default, because that is what dev is', async () => {
-    const config = await load({ NODE_ENV: 'development', API_BASE_URL: undefined });
+    const config = await load({ API_BASE_URL: undefined }, 'phase-development-server');
     expect(config.env.API_BASE_URL).toBe('http://127.0.0.1:8000');
+  });
+});
+
+describe('starting an already-built artefact', () => {
+  // `next start` evaluates this config with NODE_ENV=production. Validating
+  // there refused to boot a bundle that had been built correctly — the value is
+  // already inlined by then, so the check proved nothing and only broke things.
+  it('does not require API_BASE_URL again at start', async () => {
+    const config = await load({ API_BASE_URL: undefined }, 'phase-production-server');
+    expect(config.reactStrictMode).toBe(true);
+  });
+
+  it('does not reject a loopback value at start either', async () => {
+    const config = await load(
+      { API_BASE_URL: 'http://127.0.0.1:8000', ALLOW_LOOPBACK_API_BASE_URL: undefined },
+      'phase-production-server',
+    );
+    expect(config.reactStrictMode).toBe(true);
   });
 });
 
