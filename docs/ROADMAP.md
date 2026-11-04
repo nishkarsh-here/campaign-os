@@ -1,5 +1,25 @@
 # ROADMAP.md
 
+## Current focus
+
+Milestones 0–11 below describe delivered product scope. They are historical
+acceptance records, not a promise that every listed third-party integration is
+available. The README and deployment guide identify the currently implemented
+provider adapters and operational limits.
+
+Potential next priorities, subject to maintainer review and user demand:
+
+1. Publish an explicit license after confirming rights to every part of the
+   repository and its bundled assets.
+2. Establish a repeatable public contribution and release process, then publish
+   a first tagged release only after choosing a versioning policy.
+3. Track adoption and contributor feedback before selecting additional product
+   work; do not treat the completed milestone table below as a commitment to a
+   specific feature schedule.
+
+These priorities are proposals for discussion. They are not funded or scheduled
+work.
+
 Built **vertically**: a thin path that runs end to end, then depth. At every
 milestone the product is demonstrable. Each milestone lists its exit criteria —
 these are the definition of done, not aspirations.

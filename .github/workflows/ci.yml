@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests and checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: campaign_os_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d campaign_os_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/campaign_os_test
+      DATABASE_URL_SYNC: postgresql://postgres:postgres@127.0.0.1:5432/campaign_os_test
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/campaign_os_test
+      LLM_PROVIDER: mock
+      IMAGE_PROVIDER: mock
+      EMBEDDING_PROVIDER: mock
+      STORAGE_PROVIDER: local
+      SEARCH_PROVIDER: none
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --locked --extra dev
+      - name: Apply database migrations
+        working-directory: backend
+        run: uv run alembic upgrade head
+      - name: Run backend tests
+        working-directory: backend
+        run: uv run pytest
+      - name: Check backend style
+        working-directory: backend
+        run: uv run ruff check app tests
+      - name: Check backend types
+        working-directory: backend
+        run: uv run mypy app
+
+  frontend:
+    name: Frontend tests and checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+      - name: Check frontend style
+        working-directory: frontend
+        run: npm run lint
+      - name: Check frontend types
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          API_BASE_URL: https://api.example.com
+        run: npm run build

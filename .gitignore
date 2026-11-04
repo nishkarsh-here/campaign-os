@@ -28,6 +28,9 @@ out/
 storage/
 backend/storage/
 
+# Local scratch space and tool caches
+work/
+
 # --- os / editor -------------------------------------------------------
 .DS_Store
 Thumbs.db
