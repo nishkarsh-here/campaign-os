@@ -2,6 +2,16 @@
 
 **From brainstorm to brand-ready campaign.**
 
+> **Repository status:** this project is under active development. Mock mode is
+> the supported offline path; provider adapters and deployment constraints are
+> described below. The repository currently has no license file, so reuse and
+> redistribution terms have not been declared.
+
+[Architecture](docs/ARCHITECTURE.md) · [Product and workflow specs](docs/PRODUCT_SPEC.md)
+· [Roadmap](docs/ROADMAP.md) · [Testing](docs/TESTING.md) ·
+[Deployment](docs/DEPLOYMENT.md) · [Contributing](CONTRIBUTING.md) ·
+[Security](SECURITY.md)
+
 An AI marketing and branding **orchestration** platform. It turns fragmented
 human intent, brand knowledge, creative references and market context into
 approved, multi-channel campaign assets — with humans at the decisions that
@@ -119,7 +129,7 @@ ADR-013 and ADR-014).
 
 | | |
 |---|---|
-| Tests | backend 1,402 passing · frontend 557 passing · ruff clean · mypy strict clean · tsc clean · Next build clean |
+| Tests | frontend 592 passed; lint, typecheck and production build passed in the 2026-11-04 local review. Backend 1,402 passing is the last recorded run (2026-09-14); backend checks were not rerun in this review. |
 | Migrations | 001–009, `alembic check` clean |
 | API | 62 routes under `/v1` |
 | Frontend | 13 routes, all four async states on every screen |
@@ -141,15 +151,37 @@ path.
 
 ## Quick start
 
-Requires PostgreSQL 16+ with `pgcrypto`, `citext` and `vector` available. No
-Docker, no cloud account, no API key.
+Requires Python 3.12 or 3.13, Node.js 22, `uv`, npm, and PostgreSQL 16+ with
+`pgcrypto`, `citext` and `vector` (pgvector) available. No cloud account or API
+key is needed for the mock-provider path. Docker is optional; PostgreSQL may be
+installed locally or provided by a container.
+
+The command blocks below assume you start from the repository root. Use a new
+terminal or return to the repository root before running the next block.
 
 ```bash
 createdb campaign_os && createdb campaign_os_test
 cd backend && cp ../.env.example .env
 uv sync --extra dev
 uv run alembic upgrade head
-uv run pytest
+DATABASE_URL_SYNC=postgresql://localhost:5432/campaign_os_test \
+DATABASE_URL=postgresql+asyncpg://localhost:5432/campaign_os_test \
+uv run alembic upgrade head
+```
+
+Run the backend checks against the migrated test database:
+
+```bash
+cd backend
+TEST_DATABASE_URL=postgresql+asyncpg://localhost:5432/campaign_os_test uv run pytest
+uv run ruff check app tests
+uv run mypy app
+```
+
+Start the API in a separate terminal:
+
+```bash
+cd backend
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
@@ -164,6 +196,11 @@ not fetched from a CDN.
 ```bash
 cd frontend && npm test        # vitest: auth logic in node, UI primitives in jsdom
 ```
+
+The repository's [CI workflow](.github/workflows/ci.yml) runs backend tests,
+lint and type checks against PostgreSQL with pgvector, plus frontend tests,
+lint, type checks and a production build. Live-provider tests are excluded and
+must never be needed by routine CI.
 
 ## Demo mode
 
@@ -222,6 +259,13 @@ against a real project** — the first deploy is the verification step.
 5. [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md) · [`docs/API_SPEC.md`](docs/API_SPEC.md) · [`docs/UI_SPEC.md`](docs/UI_SPEC.md)
 6. [`docs/TESTING.md`](docs/TESTING.md) · [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) · [`docs/ROADMAP.md`](docs/ROADMAP.md)
 7. [`docs/HYPERLOCAL_BENCHMARK.md`](docs/HYPERLOCAL_BENCHMARK.md) — the Indian hyperlocal benchmark: three fictional companies, nine campaigns, and what localisation means here
+
+## Contributing
+
+Start with [`CONTRIBUTING.md`](CONTRIBUTING.md). Use fictional data in examples
+and do not include customer, employer, or other third-party material unless you
+have permission to publish it. For suspected vulnerabilities, follow
+[`SECURITY.md`](SECURITY.md) and use a private reporting route.
 
 ## Stack
 
